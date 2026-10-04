@@ -1,0 +1,98 @@
+PRE-CREATION GUIDE
+
+Before creating this Bitcoin Core multisig signer, confirm all of the following:
+
+[ ] I have verified the Tails ISO.
+[ ] I am working in a normal non-persistent Tails session.
+[ ] I am using Bitcoin Core v32.0rc2 and have independently verified the release and the signing-key fingerprints I trust.
+[ ] The Bitcoin-Core-Multisig-Quorum-Signer folder is next to bitcoin-32.0rc2-x86_64-linux-gnu.tar.gz in the same parent folder; the tarball is still compressed.
+[ ] I have physically air-gapped this computer where practical. The launcher also disables NetworkManager networking, which is defense in depth rather than a substitute for physical isolation.
+[ ] I understand this process creates a Bitcoin Core wallet containing private signing material.
+[ ] I have a secure backup destination ready for the completed signer wallet.
+[ ] I have the other signer/coordinator key expressions needed to construct the final public multisig descriptor.
+[ ] I can independently verify the completed quorum descriptor before funding it.
+[ ] I have a small amount of disposable bitcoin or test-network funds available for an end-to-end PSBT signing test.
+[ ] I have enough uninterrupted time to create, back up, verify, and test the signer before storing it.
+
+VERIFY YOUR SOFTWARE
+
+Use a verified Tails ISO and Bitcoin Core v32.0rc2.
+
+Official Tails verification:
+https://tails.net/install/download/
+
+Official Bitcoin Core verification:
+https://bitcoincore.org/en/download/#verify-your-download
+
+This project currently requires Bitcoin Core v32.0rc2 because it uses addhdkey, derivehdkey, and gethdkeys.
+
+PLACE THE TARBALL NEXT TO THE PROJECT FOLDER
+
+Expected layout:
+
+your-folder/
+    bitcoin-32.0rc2-x86_64-linux-gnu.tar.gz
+    Bitcoin-Core-Multisig-Quorum-Signer/
+        tails.sh
+        generator.py
+        PRE-CREATION-GUIDE.txt
+        POST-CREATION-GUIDE.txt
+        DESIGN.md
+        AUDITING.md
+        AUDIT.md
+        README.md
+        UPSTREAM.md
+
+Do not extract the archive yourself for this workflow. tails.sh verifies the adjacent archive against the pinned official SHA-256 and extracts a fresh copy.
+
+Pinned SHA-256:
+
+0255103718033e6aee15fa944717fc277e047b845bff1e7408af0ea732d8d0c1
+
+The launcher ignores other Bitcoin Core installations on PATH and invokes only bitcoin-cli and bitcoind from the verified fresh extraction.
+
+AIR GAP
+
+For a signer that may protect meaningful funds, use dedicated hardware and physically remove or disable network capability where practical.
+
+After this guide is shown, tails.sh runs:
+
+nmcli networking off
+
+and aborts unless NetworkManager reports networking disabled. Core is also started with:
+
+-networkactive=0 -listen=0
+
+These are additional controls, not proof that the host hardware or operating system is uncompromised.
+
+WHAT WILL HAPPEN
+
+The generator will:
+
+1. create a blank private-key-enabled descriptor wallet;
+2. call addhdkey so Bitcoin Core creates and stores the signer root;
+3. derive the BIP87 account at m/87h/0h/0h on mainnet;
+4. display the public [fingerprint/path]xpub expression and a QR;
+5. wait for you to paste the completed public wsh(sortedmulti(...)) quorum descriptor;
+6. accept BIP87 cosigners and BIP48 native-P2WSH cosigners, while verifying that this Core signer appears exactly once with its own BIP87 identity;
+7. derive this signer's private BIP87 account key internally;
+8. import the complete multisig signing descriptor;
+9. verify Core reports exactly one private key in the active multisig policy.
+
+The public QR does not contain private key material.
+
+OTHER SIGNERS
+
+This Core signer uses BIP87 account 0. Other quorum members do not have to use BIP87.
+
+For native P2WSH multisig, accepted cosigner account origins are:
+
+BIP87:
+    m/87h/coin_typeh/accounth
+
+BIP48 native P2WSH:
+    m/48h/coin_typeh/accounth/2h
+
+BIP48 /1h is nested SegWit (P2SH-P2WSH) and is not valid for this native wsh(...) quorum.
+
+When ready, close this guide and continue in the Console.

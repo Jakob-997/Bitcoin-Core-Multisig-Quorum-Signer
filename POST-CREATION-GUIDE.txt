@@ -1,0 +1,72 @@
+POST-CREATION GUIDE
+
+Your Bitcoin Core multisig signer has been created.
+
+The persistent wallet data is in:
+
+signer-wallets/
+
+inside this project folder.
+
+Keep this computer and the signer backup private until the full quorum has been verified.
+
+1. BACK UP THE SIGNER WALLET
+
+Create at least one verified backup of the completed Bitcoin Core wallet before funding the quorum.
+
+The wallet contains private signing material. Anyone who obtains it may be able to produce this signer's share of a multisig signature.
+
+Do not place the private signer wallet on an online computer.
+
+2. VERIFY THE PUBLIC QUORUM
+
+On the coordinator/watch-only side, verify the final public descriptor is the exact descriptor you intended.
+
+Confirm:
+
+- the intended M-of-N threshold;
+- the expected signer fingerprints;
+- the expected BIP87 or BIP48 native-P2WSH account paths (this Core signer uses BIP87 account 0);
+- wsh(sortedmulti(...));
+- /<0;1>/* receive/change derivation;
+- the same first receive address is derived independently by the signer and the coordinator.
+
+Do not fund an address that has only been verified on an online machine.
+
+3. TEST THE SIGNER WITH DISPOSABLE FUNDS
+
+Before meaningful use:
+
+- send a small disposable amount to an address independently verified by the offline signer;
+- create an unsigned PSBT on the online coordinator;
+- transfer the PSBT to the offline signer;
+- load it in Bitcoin Core;
+- independently verify destination, amount, fee, and transaction details;
+- sign it;
+- combine the required signatures;
+- broadcast only after the intended threshold is reached.
+
+If the quorum has more signers than the threshold, test each signer independently from the original unsigned PSBT so every backup is proven capable of signing.
+
+4. VERIFY RESTORE
+
+Copy the signer backup to temporary writable storage on an offline system and confirm Bitcoin Core can load it.
+
+Verify the restored wallet derives the same multisig receive address and can sign a disposable test PSBT.
+
+5. STORE THE SIGNER
+
+After backup and testing are complete:
+
+- shut down the offline computer;
+- remove the Tails USB;
+- move the signer backup directly to its intended secure storage;
+- keep it separate from other quorum signers according to your threat model.
+
+ONLINE COMPUTER IS UNTRUSTED
+
+The online coordinator may be compromised.
+
+Before signing, trust only transaction details independently verified on the offline signer. Never approve a transaction solely because the online computer says it is correct.
+
+Finished.
