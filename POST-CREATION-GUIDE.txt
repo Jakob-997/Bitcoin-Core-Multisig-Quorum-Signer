@@ -4,7 +4,7 @@ Your Bitcoin Core descriptor signer has been created.
 
 Persistent wallet data is in:
 
-signer-wallets/
+descriptor-signer-wallets/
 
 inside this project folder.
 
