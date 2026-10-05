@@ -1,72 +1,70 @@
 POST-CREATION GUIDE
 
-Your Bitcoin Core multisig signer has been created.
+Your Bitcoin Core descriptor signer has been created.
 
-The persistent wallet data is in:
+Persistent wallet data is in:
 
 signer-wallets/
 
 inside this project folder.
 
-Keep this computer and the signer backup private until the full quorum has been verified.
+1. BACK UP THE SIGNER
 
-1. BACK UP THE SIGNER WALLET
+Create and verify an offline backup before funding the wallet policy.
 
-Create at least one verified backup of the completed Bitcoin Core wallet before funding the quorum.
+The backup contains private signing material. Anyone who obtains it may be able to sign whenever a spending path involving this signer is available.
 
-The wallet contains private signing material. Anyone who obtains it may be able to produce this signer's share of a multisig signature.
+2. VERIFY THE PUBLIC POLICY
 
-Do not place the private signer wallet on an online computer.
+On the coordinator side, independently verify the exact public descriptor you intended.
 
-2. VERIFY THE PUBLIC QUORUM
+Depending on the policy, check:
 
-On the coordinator/watch-only side, verify the final public descriptor is the exact descriptor you intended.
+- signer fingerprints and account origins;
+- thresholds;
+- receive/change derivation;
+- Miniscript branches;
+- relative or absolute timelocks;
+- Taproot script paths;
+- recovery paths;
+- the first several receive/change addresses.
 
-Confirm:
+Do not treat successful Core import as proof that the policy is correct.
 
-- the intended M-of-N threshold;
-- the expected signer fingerprints;
-- the expected BIP87 or BIP48 native-P2WSH account paths (this Core signer uses BIP87 account 0);
-- wsh(sortedmulti(...));
-- /<0;1>/* receive/change derivation;
-- the same first receive address is derived independently by the signer and the coordinator.
+3. TEST WITH DISPOSABLE FUNDS
 
-Do not fund an address that has only been verified on an online machine.
+Create a PSBT that exercises a path involving this signer.
 
-3. TEST THE SIGNER WITH DISPOSABLE FUNDS
+On the offline signer:
+- inspect destination;
+- inspect amount;
+- inspect fee;
+- sign with Bitcoin Core.
 
-Before meaningful use:
+Complete the policy's required signatures and verify the transaction before broadcast.
 
-- send a small disposable amount to an address independently verified by the offline signer;
-- create an unsigned PSBT on the online coordinator;
-- transfer the PSBT to the offline signer;
-- load it in Bitcoin Core;
-- independently verify destination, amount, fee, and transaction details;
-- sign it;
-- combine the required signatures;
-- broadcast only after the intended threshold is reached.
-
-If the quorum has more signers than the threshold, test each signer independently from the original unsigned PSBT so every backup is proven capable of signing.
+For timelocked/recovery policies, test those paths separately on regtest/test infrastructure where practical.
 
 4. VERIFY RESTORE
 
-Copy the signer backup to temporary writable storage on an offline system and confirm Bitcoin Core can load it.
+Restore the signer backup on an offline system.
 
-Verify the restored wallet derives the same multisig receive address and can sign a disposable test PSBT.
+Confirm:
+- the wallet loads;
+- the same public descriptor is present;
+- expected addresses match;
+- the local signer can sign a disposable PSBT for an applicable path.
 
-5. STORE THE SIGNER
+5. STORE
 
-After backup and testing are complete:
-
-- shut down the offline computer;
+After testing:
+- shut down the offline system;
 - remove the Tails USB;
-- move the signer backup directly to its intended secure storage;
-- keep it separate from other quorum signers according to your threat model.
+- store backups according to your threat model;
+- keep enough independent signer material separated to preserve the wallet policy.
 
-ONLINE COMPUTER IS UNTRUSTED
+ONLINE COORDINATOR IS UNTRUSTED
 
-The online coordinator may be compromised.
+The coordinator may be compromised.
 
-Before signing, trust only transaction details independently verified on the offline signer. Never approve a transaction solely because the online computer says it is correct.
-
-Finished.
+Verify transaction details and the intended wallet policy independently before signing.
