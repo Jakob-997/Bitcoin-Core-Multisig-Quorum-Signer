@@ -35,7 +35,7 @@ The three-layer architecture remains:
 
 ```text
 generator.py: d204101565532767463ff31e51158f934e3d8e6e
-tails.sh:     10a80630066599b429a3bafa2914bad2d6cb2d32
+tails.sh:     29ce937406e0380dca9fbfc74605e154fcacf017
 ```
 
 The generator is no longer byte-identical to the original Core-Helper snapshot. It was deliberately simplified from a custom multisig-policy parser into a descriptor-agnostic signer that delegates descriptor parsing to Bitcoin Core.
