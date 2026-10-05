@@ -1,10 +1,10 @@
-# Bitcoin Core Multisig Quorum Signer
+# Bitcoin Core Descriptor Signer
 
-**Create one Bitcoin Core signer for a multisig quorum, with support for BIP87 and BIP48 native-P2WSH cosigners.**
+**Create an offline Bitcoin Core signer and attach it to any public descriptor that Bitcoin Core itself accepts.**
 
-Built using the [Bitcoin Core Feature Overlay](https://github.com/Jakob-997/Bitcoin-Core-Feature-Overlay) at revision `632648b88cdb867ab6372e2850e8a53d00f58552`: minimal Core-facing logic, a separate Tails launcher, and separate human/audit documentation.
+Built using the [Bitcoin Core Feature Overlay](https://github.com/Jakob-997/Bitcoin-Core-Feature-Overlay) at revision `632648b88cdb867ab6372e2850e8a53d00f58552`.
 
-The utility creates one blank Core signer wallet, exports its public BIP87 account key as text + QR, then imports the completed multisig policy so the wallet can sign PSBTs as one member of the quorum.
+The helper no longer tries to understand or whitelist wallet-policy shapes such as `wsh(sortedmulti(...))`, Liana Miniscript, or Taproot. Bitcoin Core is the descriptor parser. The helper's job is only to create one local signer key, bind that exact key to the supplied public descriptor, substitute its xprv in memory, and prove that substitution did not change the public descriptor.
 
 ## Get the project
 
@@ -12,99 +12,72 @@ The utility creates one blank Core signer wallet, exports its public BIP87 accou
 git clone https://github.com/Jakob-997/Bitcoin-Core-Multisig-Quorum-Signer.git
 ```
 
-The project files live at the repository root. If using GitHub's ZIP download, extract it and rename the folder to `Bitcoin-Core-Multisig-Quorum-Signer` to match the layout below.
-
 ## Quick start
 
-> **For a real signer:** use dedicated hardware that is physically air-gapped where practical. The launcher's software networking shutdown is defense in depth.
+> For meaningful funds, use dedicated physically air-gapped hardware where practical. Software networking shutdown is defense in depth.
 
 ```text
 1. Verify Tails and Bitcoin Core v32.0rc2.
-2. Put the Bitcoin-Core-Multisig-Quorum-Signer folder next to:
+2. Put this project folder next to:
    bitcoin-32.0rc2-x86_64-linux-gnu.tar.gz
 3. Read PRE-CREATION-GUIDE.txt.
-4. In Tails, make tails.sh executable and choose "Run as a Program".
-5. Add the displayed BIP87 key to your multisig quorum.
-6. Paste the completed public quorum descriptor into the signer.
-7. Follow POST-CREATION-GUIDE.txt to back up, restore, verify, and test it.
+4. Run tails.sh.
+5. Choose the account convention this Core signer should export.
+6. Add the displayed public key to your wallet policy/coordinator.
+7. Paste the complete PUBLIC descriptor back into the signer.
+8. Back up, restore, independently verify the policy/addresses, and test with disposable funds.
 ```
 
-Expected layout:
+## Local signer account
+
+Choose one:
 
 ```text
-your-folder/
-├── bitcoin-32.0rc2-x86_64-linux-gnu.tar.gz
-└── Bitcoin-Core-Multisig-Quorum-Signer/
-    ├── tails.sh
-    ├── generator.py
-    ├── PRE-CREATION-GUIDE.txt
-    ├── POST-CREATION-GUIDE.txt
-    ├── DESIGN.md
-    ├── AUDITING.md
-    ├── AUDIT.md
-    ├── README.md
-    └── UPSTREAM.md
+BIP87:
+m/87h/coin_typeh/0h
+
+BIP48 native-P2WSH:
+m/48h/coin_typeh/0h/2h
 ```
 
-Use **Bitcoin Core v32.0rc2 exactly**. Another release must be tested and reviewed before changing the pin.
+This choice controls only **this Core signer's key**. Other keys and the descriptor policy are not restricted by this helper.
 
-## Design at a glance
+For your Liana example, the recovery signer uses BIP87 and the immediate-spend signer uses BIP48, so choose whichever role this Core signer is taking.
 
-- Bitcoin Core generates, derives, validates, and stores the keys.
-- This Core signer uses BIP87 account 0.
-- Other quorum members may use BIP87 or BIP48 native-P2WSH (`m/48h/coin_typeh/accounth/2h`) account keys.
-- The quorum is native SegWit `wsh(sortedmulti())`.
-- Only this signer's account key becomes private inside its imported multisig descriptor.
-- The public signer key is displayed with Tails' installed `qr` command.
-- The helper contains no custom cryptography.
+## Descriptor acceptance
+
+The signer accepts any **public descriptor that Bitcoin Core v32.0rc2 accepts** and that contains this signer's exact account identity.
+
+Examples can include:
+
+- `wsh(sortedmulti(...))`;
+- Miniscript such as Liana `wsh(or_d(...older(...)))`;
+- Taproot `tr(...)`, if Core accepts the descriptor and the local account key is represented in a compatible descriptor-key position;
+- other Core-supported descriptor forms.
+
+The helper does not interpret the policy. It does not check whether thresholds, timelocks, recovery paths, or other cosigner keys are what you intended.
+
+## Security invariant
+
+Before import:
+
+1. Core parses/canonicalizes the public descriptor.
+2. The exact local `[origin]xpub` identity must appear.
+3. Only exact occurrences of that identity are replaced with the matching xprv.
+4. Core parses the private form.
+5. Core's canonical public descriptor and multipath expansion must be **identical** to the originals.
+6. Only then is the private descriptor imported.
+
+Sensitive descriptor material is sent to `bitcoin-cli` through stdin, not argv.
 
 ## Three layers
 
 | Layer | File | Responsibility |
 | --- | --- | --- |
-| Generator | [generator.py](generator.py) | Core RPC flow and signer construction |
-| Tails launcher | [tails.sh](tails.sh) | Network shutdown, pinned Core verification/extraction, isolated runtime |
-| Human procedure | [PRE-CREATION-GUIDE.txt](PRE-CREATION-GUIDE.txt) / [POST-CREATION-GUIDE.txt](POST-CREATION-GUIDE.txt) | Preparation, backup, restore, verification, test spend |
+| Generator | [generator.py](generator.py) | Core RPC flow, local signer binding, descriptor invariant |
+| Tails launcher | [tails.sh](tails.sh) | Network shutdown, pinned Core extraction, isolated runtime |
+| Human procedure | pre/post guides | Policy verification, backup, recovery, test signing |
 
-The generator is the primary executable review target. Tails/environment changes belong in the launcher; operating procedure changes belong in the guides.
+See [DESIGN.md](DESIGN.md) and [AUDIT.md](AUDIT.md).
 
-## Signer key
-
-The public key shown to the coordinator is:
-
-```text
-[fingerprint/87h/0h/0h]xpub...
-```
-
-Supported test networks use coin type 1.
-
-The completed descriptor must have the form:
-
-```text
-wsh(sortedmulti(M,[origin]xpub/<0;1>/*,...))
-```
-
-Accepted signer origins are:
-
-```text
-BIP87: [fingerprint/87h/coin_typeh/accounth]xpub/<0;1>/*
-BIP48: [fingerprint/48h/coin_typeh/accounth/2h]xpub/<0;1>/*
-```
-
-For BIP48, only script type `2h` is accepted because this utility creates native P2WSH `wsh(...)` multisig. The nested-SegWit BIP48 `1h` branch corresponds to `sh(wsh(...))` and is intentionally rejected.
-
-## Provenance
-
-Migrated from `Jakob-997/Core-Helper` at commit `ecce55d21de90df059f6bf49dab6847badf721b7`, directory `utilities/core-multisig-signer/`. See [UPSTREAM.md](UPSTREAM.md) for the immutable source link, canonical overlay revision, and preserved executable identities. The existing [audit record](AUDIT.md) and its testing limitations are retained unchanged.
-
-The internal default wallet name and launcher runtime prefix remain `core-multisig-signer`; the output directory remains `signer-wallets/`. Renaming the repository does not change signer construction or wallet behavior.
-
-## Read more
-
-- [DESIGN.md](DESIGN.md) — architecture, trust model, descriptor construction, private-key boundary
-- [AUDITING.md](AUDITING.md) — review method inherited from Bitcoin Core Feature Overlay
-- [AUDIT.md](AUDIT.md) — exact reviewed executable revisions, findings, limitations
-- [PRE-CREATION-GUIDE.txt](PRE-CREATION-GUIDE.txt) — preparation checklist
-- [POST-CREATION-GUIDE.txt](POST-CREATION-GUIDE.txt) — backup, restore, address verification, PSBT test
-
-**This utility has received AI-assisted review but no independent professional security audit.**
+**AI-assisted review only; no independent professional security audit has been performed.**
