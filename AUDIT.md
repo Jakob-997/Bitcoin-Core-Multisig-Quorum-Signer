@@ -2,7 +2,7 @@
 
 **Bitcoin Core Feature Overlay revision:** `632648b88cdb867ab6372e2850e8a53d00f58552`  
 **Generator blob:** `d204101565532767463ff31e51158f934e3d8e6e`  
-**Tails launcher blob:** `10a80630066599b429a3bafa2914bad2d6cb2d32`  
+**Tails launcher blob:** `29ce937406e0380dca9fbfc74605e154fcacf017`  
 **Bitcoin Core version reviewed:** `v32.0rc2`  
 **Bitcoin Core commit:** `bc795e60dbb2c6e9c9556949731912429290626a`  
 **Review date:** 2026-10-04
@@ -57,7 +57,7 @@ m/48h/coin_typeh/0h/2h
 - The launcher disables NetworkManager networking and also starts Core with `-networkactive=0 -listen=0`.
 - The pinned Core archive is SHA-256 verified and freshly extracted.
 - Temporary HOME/runtime state is under `/dev/shm`.
-- Existing `signer-wallets/` output is not reused.
+- Existing `descriptor-signer-wallets/` output is not reused.
 
 ## Why the policy parser was removed
 
