@@ -1,158 +1,148 @@
 # Audit Record
 
 **Bitcoin Core Feature Overlay revision:** `632648b88cdb867ab6372e2850e8a53d00f58552`  
-**Generator blob:** `7bcca4968217d8f338ce563c7156329f6d0d5b8e`  
+**Generator blob:** `d204101565532767463ff31e51158f934e3d8e6e`  
 **Tails launcher blob:** `10a80630066599b429a3bafa2914bad2d6cb2d32`  
 **Bitcoin Core version reviewed:** `v32.0rc2`  
 **Bitcoin Core commit:** `bc795e60dbb2c6e9c9556949731912429290626a`  
 **Review date:** 2026-10-04
 
-This is an AI-assisted source/security review record. It is not an independent professional security audit. Review method: [AUDITING.md](AUDITING.md).
+This is an AI-assisted source/security review record, not an independent professional security audit. Review method: [AUDITING.md](AUDITING.md).
 
-## Scope
+## Current design
 
-The review covered:
+The signer is descriptor-agnostic.
 
-- `generator.py`;
-- `tails.sh`;
-- BIP87 signer derivation;
-- public quorum descriptor validation;
-- private account-key substitution for signing-wallet import;
-- descriptor canonicalization checks;
-- `gethdkeys` post-import verification;
-- stdin handling for sensitive RPC parameters;
-- Tails networking shutdown;
-- pinned Bitcoin Core archive verification and fresh extraction;
-- QR output boundary;
-- backup/restore/test-spend procedure.
+Bitcoin Core `getdescriptorinfo` is the policy parser. The helper no longer contains a custom `wsh(sortedmulti())` or Miniscript/Liana parser.
+
+The local Core signer may export one of:
+
+```text
+BIP87:
+m/87h/coin_typeh/0h
+
+BIP48 native-P2WSH:
+m/48h/coin_typeh/0h/2h
+```
 
 ## Construction reviewed
 
-The intended construction is:
-
-1. create a blank descriptor wallet with private keys enabled;
-2. call `addhdkey` so Core generates/stores a fresh HD root;
-3. call `derivehdkey` at BIP87 account 0;
-4. export only the public origin+xpub expression;
-5. accept only a public `wsh(sortedmulti(...))` quorum descriptor whose signer origins are BIP87 or BIP48 native-P2WSH;
-6. require exactly one match to this signer;
-7. derive this signer's account xprv internally;
-8. replace only the matching account xpub in memory;
-9. require Core to canonicalize the private form to the same public descriptor/multipath expansion;
-10. import the signing descriptor;
-11. require `gethdkeys active_only=true` to report exactly one active private signer key.
+1. Create a blank private-key-enabled descriptor wallet.
+2. Core generates/stores a fresh HD root using `addhdkey`.
+3. Core derives the selected local account with `derivehdkey`.
+4. Export only the public `[origin]xpub` identity.
+5. Pass the complete PUBLIC descriptor to Core `getdescriptorinfo`.
+6. Reject supplied descriptors containing private keys.
+7. Require the canonical public descriptor to contain this exact local `[origin]xpub`.
+8. If the same xpub appears with another/ambiguous origin, abort.
+9. Core derives the matching local account xprv internally.
+10. Replace every exact occurrence of the local identity with the xprv, preserving descriptor syntax and child suffixes.
+11. Pass the private form back to Core `getdescriptorinfo`.
+12. Require identical canonical public `descriptor` and identical `multipath_expansion`.
+13. Import the descriptor through stdin.
+14. Use `gethdkeys` to require the local account xpub is private/signable and attached to the exact imported public descriptor.
 
 ## Security properties reviewed
 
 - No custom cryptographic primitives are implemented.
-- Bitcoin Core generates and derives the signer keys.
-- Sensitive RPC parameters are sent through `bitcoin-cli -stdin`, not argv.
+- No custom wallet-policy or Miniscript parser is implemented.
+- Bitcoin Core generates and derives the local signing key.
+- Bitcoin Core parses and canonicalizes the descriptor.
+- Sensitive RPC material is passed through `bitcoin-cli -stdin`, not argv.
 - The xprv/private descriptor are not intentionally printed, persisted by the helper, copied to clipboard, or QR encoded.
-- RPC errors involving private descriptor material suppress potentially sensitive response text.
-- The QR receives public signer information only.
-- Descriptor input fails closed on wrong structure, network, unsupported signer origin, wrong BIP48 script type, duplicate keys, private input, or local-signer mismatch.
-- The launcher disables NetworkManager networking and requires the disabled state.
-- Core is additionally started with `-networkactive=0 -listen=0`.
-- The launcher verifies the pinned v32.0rc2 archive before extracting and uses only that fresh extraction by absolute path.
-- Temporary Core HOME/runtime state is placed under `/dev/shm`.
+- Private-RPC errors suppress potentially sensitive response text.
+- Substitution is bound to the exact local origin+xpub identity, not a bare global xpub replacement.
+- Multiple exact occurrences of the same local identity are allowed.
+- Public-policy equality is checked after private substitution.
+- The launcher disables NetworkManager networking and also starts Core with `-networkactive=0 -listen=0`.
+- The pinned Core archive is SHA-256 verified and freshly extracted.
+- Temporary HOME/runtime state is under `/dev/shm`.
 - Existing `signer-wallets/` output is not reused.
 
-## Issues caught during development
+## Why the policy parser was removed
 
-### BIP87-only quorum validation
+Earlier versions restricted descriptors to `wsh(sortedmulti(...))` and then added BIP48 cosigner exceptions.
 
-The first signer parser required every quorum key to use a BIP87 account origin. That was unnecessarily restrictive for hardware wallets that commonly use BIP48 for multisig.
+That became counterproductive for richer Core-supported descriptors such as Liana Miniscript:
 
-The parser now accepts either:
+```text
+wsh(or_d(pk(...),and_v(v:pkh(...),older(...))))
+```
 
-- BIP87 account origins: `m/87h/coin_typeh/accounth`
-- BIP48 native-P2WSH origins: `m/48h/coin_typeh/accounth/2h`
+The safer/smaller design is to let Core decide whether descriptor syntax is valid and keep the helper focused only on the local private-key boundary.
 
-The local Core signer still must match its own BIP87 account-0 fingerprint, origin, and xpub exactly once. BIP48 `1h` remains rejected because it is the nested P2SH-P2WSH branch and does not match this utility's native `wsh(...)` policy.
+**Status:** implemented.
 
-**Status:** fixed.
+## Descriptor scope
 
+The helper is intended to accept any public descriptor that the pinned Core version accepts **and that contains this local signer account identity**.
 
-### RPC stdin and regex escaping
+A Core-valid descriptor can still encode a dangerous or unintended policy. The helper does not validate:
 
-An early committed draft contained incorrect Python escaping in the descriptor regexes and RPC stdin newline construction.
+- threshold correctness;
+- cosigner identity beyond the local signer;
+- timelock values;
+- recovery semantics;
+- Taproot script-tree intent;
+- whether the coordinator policy matches what the user meant.
 
-Those errors were found during committed-source review and corrected before the utility was placed on `main`.
+Those remain human/coordinator verification responsibilities.
 
-**Status:** fixed.
+## Testing status
 
-### Ambiguous Core binary selection
+Historical testing before the descriptor-agnostic rewrite included Python syntax checking and a mocked Core RPC flow for the earlier multisig-specific generator.
 
-The first utility launcher expected `bitcoin-cli` on PATH.
+The current generator rewrite has been source-reviewed here, but has **not yet** been rerun through:
 
-The Bitcoin Core Feature Overlay launcher now verifies the adjacent pinned Core archive, freshly extracts it, and passes the exact extracted binary paths to the generator.
+- target-Tails Python execution;
+- mocked end-to-end Core RPC flow;
+- real Bitcoin Core v32.0rc2 daemon;
+- the supplied Liana descriptor pattern;
+- Taproot descriptor cases;
+- fixed non-ranged descriptor cases;
+- real PSBT signing;
+- backup/restore.
 
-**Status:** fixed.
-
-### Documentation/layer drift
-
-The first version used `core_multisig_signer.py`, `GUIDE.md`, and `SECURITY.md`.
-
-The utility has now been rebased onto the Bitcoin Core Feature Overlay architecture:
-
-- `generator.py`;
-- `tails.sh`;
-- pre/post human guides;
-- `DESIGN.md`;
-- this `AUDIT.md`.
-
-The wallet construction itself was not changed by that structural refactor.
-
-**Status:** fixed.
-
-## Testing performed
-
-During development:
-
-- Python syntax checking was performed on the generator.
-- A mocked `bitcoin-cli` end-to-end flow previously exercised wallet creation, BIP87 public derivation, public descriptor validation, private account derivation, signer substitution, import, and post-import `gethdkeys` verification.
-- The later BIP48 cosigner-parser change has been source-reviewed but has not yet been rerun through that mocked flow or a real Core daemon in this session.
-- The launcher and generator were reviewed against Bitcoin Core v32.0rc2 source behavior for `addhdkey`, `derivehdkey`, and `gethdkeys`.
+Do not treat the current revision as production-ready for meaningful funds until those tests are completed.
 
 ## Still required before meaningful funds
 
-Perform the complete workflow on the exact intended Tails environment and Bitcoin Core v32.0rc2 archive, preferably first on signet/regtest, including:
+At minimum test:
 
-1. creation;
-2. backup;
-3. restore from backup;
-4. address agreement with the coordinator;
-5. real PSBT signing;
-6. threshold completion;
-7. testing every signer/recovery path.
+1. BIP87 `wsh(sortedmulti())`;
+2. BIP48 `wsh(sortedmulti())`;
+3. a Liana-style P2WSH Miniscript descriptor with `older()`;
+4. a descriptor where the same local account identity appears multiple times;
+5. a supported Taproot descriptor, if you intend to use one;
+6. backup/restore and address agreement;
+7. real disposable-funds PSBT signing for each intended policy path.
 
 ## Accepted limitations
 
 - No independent professional audit has been performed.
 - Python private strings cannot be reliably zeroized.
 - Wallet encryption is not implemented.
-- The online coordinator is outside this utility's trust boundary.
+- The coordinator/policy-builder is outside this utility's trust boundary.
 - Physical/firmware compromise is outside the helper's ability to detect.
-- The Core version pin must not be changed without retesting/review.
+- Support is tied to the exact descriptor behavior of the pinned Core release.
 
 ## Upstream references
 
 - Bitcoin Core v32.0rc2 source
-- Bitcoin Core wallet RPC implementation for `createwallet`, `addhdkey`, `derivehdkey`, and `gethdkeys`
-- Bitcoin Core descriptor/import documentation and tests
+- Bitcoin Core `doc/descriptors.md`
+- Bitcoin Core wallet RPCs: `createwallet`, `addhdkey`, `derivehdkey`, `gethdkeys`, `importdescriptors`
+- Bitcoin Core `getdescriptorinfo`
 - BIP32
+- BIP48
 - BIP87
-- BIP129
 - BIP174
-- BIP380 / BIP382 / BIP383
-- bitcoin/bitcoin#35377
-- bitcoin/bitcoin#36325
+- BIP379 Miniscript descriptors
 
 ## Maintenance rule
 
-1. Treat the reviewed `generator.py` as frozen.
-2. Keep Tails/OS changes in `tails.sh`.
-3. Keep human procedure changes in the pre/post guides.
-4. Re-review any generator change.
-5. Retest and re-review any Bitcoin Core version-pin change.
-6. Record new executable blob SHAs after any security-relevant change.
+1. Prefer Core descriptor validation over custom policy parsers.
+2. Re-review every generator change.
+3. Keep OS behavior in `tails.sh`.
+4. Keep human policy-verification requirements in the guides.
+5. Retest every Core-version change.
+6. Record new executable blob hashes after security-relevant changes.
