@@ -5,12 +5,13 @@ import subprocess
 import sys
 
 TEST_CHAINS = {"test", "testnet4", "signet", "regtest"}
-PURPOSE = 48
 ACCOUNT = 0
-SCRIPT_TYPE = 2
 
 HARDENED = r"(?:h|H|')"
-OWN_ORIGIN_RE = re.compile(
+BIP87_ORIGIN_RE = re.compile(
+    rf"^\[([0-9a-fA-F]{{8}})/87{HARDENED}/([01]){HARDENED}/0{HARDENED}\]$"
+)
+BIP48_ORIGIN_RE = re.compile(
     rf"^\[([0-9a-fA-F]{{8}})/48{HARDENED}/([01]){HARDENED}/0{HARDENED}/2{HARDENED}\]$"
 )
 
@@ -81,6 +82,19 @@ def core_info(bitcoin_cli):
     fail(f"Unsupported Bitcoin network: {chain}")
 
 
+def get_account_type():
+    print("Choose the Core signer account type to give Liana:")
+    print("  1. BIP87 multisig account      m/87h/coin_typeh/0h")
+    print("  2. BIP48 native-P2WSH account m/48h/coin_typeh/0h/2h")
+    print()
+    choice = input("Signer account type [1]: ").strip() or "1"
+    if choice == "1":
+        return "bip87"
+    if choice == "2":
+        return "bip48"
+    fail("Choose 1 for BIP87 or 2 for BIP48 native-P2WSH.")
+
+
 def get_wallet_name():
     name = input("Signer wallet name [core-liana-signer]: ").strip()
     name = name or "core-liana-signer"
@@ -103,13 +117,23 @@ def create_blank_wallet(bitcoin_cli, wallet):
         fail("Bitcoin Core did not create the expected blank private-key descriptor wallet.")
 
 
-def add_root_and_derive_public(bitcoin_cli, wallet, coin_type):
+def add_root_and_derive_public(bitcoin_cli, wallet, coin_type, account_type):
     added = rpc(bitcoin_cli, "addhdkey", wallet=wallet)
     root_xpub = added.get("xpub") if isinstance(added, dict) else None
     if not isinstance(root_xpub, str) or not root_xpub:
         fail("Unexpected response from addhdkey.")
 
-    path = f"m/{PURPOSE}h/{coin_type}h/{ACCOUNT}h/{SCRIPT_TYPE}h"
+    if account_type == "bip87":
+        path = f"m/87h/{coin_type}h/{ACCOUNT}h"
+        origin_re = BIP87_ORIGIN_RE
+        label = "BIP87"
+    elif account_type == "bip48":
+        path = f"m/48h/{coin_type}h/{ACCOUNT}h/2h"
+        origin_re = BIP48_ORIGIN_RE
+        label = "BIP48 native-P2WSH"
+    else:
+        fail("Internal error: unsupported signer account type.")
+
     options = json.dumps(
         {"hdkey": root_xpub, "private": False},
         separators=(",", ":"),
@@ -124,16 +148,15 @@ def add_root_and_derive_public(bitcoin_cli, wallet, coin_type):
     if not isinstance(origin, str) or not isinstance(account_xpub, str):
         fail("derivehdkey did not return the expected public key data.")
 
-    match = OWN_ORIGIN_RE.fullmatch(origin)
+    match = origin_re.fullmatch(origin)
     if not match or int(match.group(2)) != coin_type:
-        fail("Bitcoin Core returned an unexpected BIP48 native-P2WSH key origin.")
+        fail(f"Bitcoin Core returned an unexpected {label} key origin.")
 
     expected_prefix = "xpub" if coin_type == 0 else "tpub"
     if not account_xpub.startswith(expected_prefix):
         fail("Bitcoin Core returned an extended public key for the wrong network.")
 
-    return root_xpub, path, origin, account_xpub
-
+    return root_xpub, path, origin, account_xpub, label
 
 def show_qr(qr_bin, text):
     print()
@@ -149,13 +172,10 @@ def descriptor_body(raw):
     return raw.split("#", 1)[0]
 
 
-def local_key_pattern(fingerprint, coin_type, account_xpub):
-    hardened = r"(?:h|H|')"
+def local_key_pattern(origin, account_xpub):
     return re.compile(
-        rf"\[{re.escape(fingerprint)}/48{hardened}/{coin_type}{hardened}/"
-        rf"0{hardened}/2{hardened}\]{re.escape(account_xpub)}(?=/)"
+        rf"{re.escape(origin)}{re.escape(account_xpub)}(?=/)"
     )
-
 
 def validate_public_descriptor(bitcoin_cli, raw, coin_type, origin, account_xpub):
     info = rpc(bitcoin_cli, "getdescriptorinfo", raw)
@@ -183,16 +203,11 @@ def validate_public_descriptor(bitcoin_cli, raw, coin_type, origin, account_xpub
             "Descriptor does not contain an older() recovery timelock."
         )
 
-    origin_match = OWN_ORIGIN_RE.fullmatch(origin)
-    if not origin_match:
-        fail("Internal error: unexpected signer origin.")
-    fingerprint = origin_match.group(1).lower()
-
-    pattern = local_key_pattern(fingerprint, coin_type, account_xpub)
+    pattern = local_key_pattern(origin, account_xpub)
     matches = list(pattern.finditer(body))
     if not matches:
         raise DescriptorError(
-            "The descriptor does not contain this Core signer's BIP48 account key."
+            "The descriptor does not contain this Core signer's selected account key."
         )
 
     # If the same account xpub appears anywhere outside the exact expected origin,
@@ -309,7 +324,7 @@ def verify_signer(bitcoin_cli, wallet, account_xpub):
 
     own = [item for item in keys if item.get("xpub") == account_xpub]
     if len(own) != 1 or own[0].get("has_private") is not True:
-        fail("Bitcoin Core does not report this BIP48 account xpub as signable.")
+        fail("Bitcoin Core does not report this account xpub as signable.")
 
     descriptors = own[0].get("descriptors")
     if not isinstance(descriptors, list) or not any(
@@ -334,15 +349,16 @@ def main():
     print(f"Network: {chain}")
     print()
 
+    account_type = get_account_type()
     wallet = get_wallet_name()
     create_blank_wallet(bitcoin_cli, wallet)
-    root_xpub, path, origin, account_xpub = add_root_and_derive_public(
-        bitcoin_cli, wallet, coin_type
+    root_xpub, path, origin, account_xpub, account_label = add_root_and_derive_public(
+        bitcoin_cli, wallet, coin_type, account_type
     )
     key_expression = origin + account_xpub
 
     print()
-    print("BIP48 native-P2WSH signer key:")
+    print(f"{account_label} signer key:")
     print(key_expression)
     print()
     print("This is public information. Add it to the Liana wallet policy.")
@@ -404,9 +420,9 @@ def main():
     print()
     print("Liana signer ready.")
     print(f"Wallet: {wallet}")
-    print(f"BIP48 path: {path}")
+    print(f"Signer path: {path}")
     print(
-        "Bitcoin Core reports the local BIP48 account key as private and active "
+        "Bitcoin Core reports the local account key as private and active "
         "in the imported Liana descriptor."
     )
     print(
