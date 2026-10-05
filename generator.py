@@ -6,22 +6,13 @@ import sys
 
 TEST_CHAINS = {"test", "testnet4", "signet", "regtest"}
 ACCOUNT = 0
-PURPOSE = 87
-MAX_BIP32_INDEX = 2**31 - 1
-
 HARDENED = r"(?:h|H|')"
-KEY_RE = re.compile(
-    r"^\[([0-9a-fA-F]{8})/([^\]]+)\]"
-    r"([1-9A-HJ-NP-Za-km-z]+)/<0;1>/\*$"
-)
-OWN_ORIGIN_RE = re.compile(
+
+BIP87_ORIGIN_RE = re.compile(
     rf"^\[([0-9a-fA-F]{{8}})/87{HARDENED}/([01]){HARDENED}/0{HARDENED}\]$"
 )
-BIP87_PATH_RE = re.compile(
-    rf"^87{HARDENED}/([01]){HARDENED}/([0-9]+){HARDENED}$"
-)
-BIP48_PATH_RE = re.compile(
-    rf"^48{HARDENED}/([01]){HARDENED}/([0-9]+){HARDENED}/2{HARDENED}$"
+BIP48_ORIGIN_RE = re.compile(
+    rf"^\[([0-9a-fA-F]{{8}})/48{HARDENED}/([01]){HARDENED}/0{HARDENED}/2{HARDENED}\]$"
 )
 
 
@@ -91,9 +82,22 @@ def core_info(bitcoin_cli):
     fail(f"Unsupported Bitcoin network: {chain}")
 
 
+def get_account_type():
+    print("Choose the Core signer account to export:")
+    print("  1. BIP87 multisig account      m/87h/coin_typeh/0h")
+    print("  2. BIP48 native-P2WSH account m/48h/coin_typeh/0h/2h")
+    print()
+    choice = input("Signer account type [1]: ").strip() or "1"
+    if choice == "1":
+        return "bip87"
+    if choice == "2":
+        return "bip48"
+    fail("Choose 1 for BIP87 or 2 for BIP48 native-P2WSH.")
+
+
 def get_wallet_name():
-    name = input("Signer wallet name [core-multisig-signer]: ").strip()
-    name = name or "core-multisig-signer"
+    name = input("Signer wallet name [core-descriptor-signer]: ").strip()
+    name = name or "core-descriptor-signer"
     if not re.fullmatch(r"[A-Za-z0-9._-]{1,64}", name) or name in {".", ".."}:
         fail("Use a simple wallet name containing only letters, numbers, '.', '_', or '-'.")
     return name
@@ -113,13 +117,23 @@ def create_blank_wallet(bitcoin_cli, wallet):
         fail("Bitcoin Core did not create the expected blank private-key descriptor wallet.")
 
 
-def add_root_and_derive_public(bitcoin_cli, wallet, coin_type):
+def add_root_and_derive_public(bitcoin_cli, wallet, coin_type, account_type):
     added = rpc(bitcoin_cli, "addhdkey", wallet=wallet)
     root_xpub = added.get("xpub") if isinstance(added, dict) else None
     if not isinstance(root_xpub, str) or not root_xpub:
         fail("Unexpected response from addhdkey.")
 
-    path = f"m/{PURPOSE}h/{coin_type}h/{ACCOUNT}h"
+    if account_type == "bip87":
+        path = f"m/87h/{coin_type}h/{ACCOUNT}h"
+        origin_re = BIP87_ORIGIN_RE
+        label = "BIP87"
+    elif account_type == "bip48":
+        path = f"m/48h/{coin_type}h/{ACCOUNT}h/2h"
+        origin_re = BIP48_ORIGIN_RE
+        label = "BIP48 native-P2WSH"
+    else:
+        fail("Internal error: unsupported account type.")
+
     options = json.dumps(
         {"hdkey": root_xpub, "private": False},
         separators=(",", ":"),
@@ -134,15 +148,15 @@ def add_root_and_derive_public(bitcoin_cli, wallet, coin_type):
     if not isinstance(origin, str) or not isinstance(account_xpub, str):
         fail("derivehdkey did not return the expected public key data.")
 
-    match = OWN_ORIGIN_RE.fullmatch(origin)
+    match = origin_re.fullmatch(origin)
     if not match or int(match.group(2)) != coin_type:
-        fail("Bitcoin Core returned an unexpected BIP87 key origin.")
+        fail(f"Bitcoin Core returned an unexpected {label} key origin.")
 
     expected_prefix = "xpub" if coin_type == 0 else "tpub"
     if not account_xpub.startswith(expected_prefix):
         fail("Bitcoin Core returned an extended public key for the wrong network.")
 
-    return root_xpub, path, origin, account_xpub
+    return root_xpub, path, origin, account_xpub, label
 
 
 def show_qr(qr_bin, text):
@@ -159,126 +173,44 @@ def descriptor_body(raw):
     return raw.split("#", 1)[0]
 
 
-def parse_signer_origin(path, coin_type):
-    match = BIP87_PATH_RE.fullmatch(path)
-    if match:
-        key_coin, account_text = match.groups()
-        account = int(account_text)
-        if int(key_coin) != coin_type:
-            raise DescriptorError(
-                "Descriptor contains a BIP87 signer from the wrong coin type."
-            )
-        if account > MAX_BIP32_INDEX:
-            raise DescriptorError("BIP87 account index is outside the BIP32 range.")
-        return (87, coin_type, account, None)
-
-    match = BIP48_PATH_RE.fullmatch(path)
-    if match:
-        key_coin, account_text = match.groups()
-        account = int(account_text)
-        if int(key_coin) != coin_type:
-            raise DescriptorError(
-                "Descriptor contains a BIP48 signer from the wrong coin type."
-            )
-        if account > MAX_BIP32_INDEX:
-            raise DescriptorError("BIP48 account index is outside the BIP32 range.")
-        return (48, coin_type, account, 2)
-
-    raise DescriptorError(
-        "Every signer must use either a BIP87 account origin "
-        "[fingerprint/87h/coin_typeh/accounth]xpub/<0;1>/* "
-        "or a BIP48 native-P2WSH origin "
-        "[fingerprint/48h/coin_typeh/accounth/2h]xpub/<0;1>/*."
-    )
+def local_key_pattern(origin, account_xpub):
+    # getdescriptorinfo canonicalizes descriptor syntax. Match only this signer's
+    # exact origin+xpub identity and require a descriptor-key boundary after it.
+    identity = re.escape(origin + account_xpub)
+    return re.compile(identity + r"(?=[/,)}])")
 
 
-def parse_policy(body, coin_type, own_origin, own_xpub):
-    prefix = "wsh(sortedmulti("
-    if not body.startswith(prefix) or not body.endswith("))"):
-        raise DescriptorError(
-            "Descriptor must be a native SegWit wsh(sortedmulti(...)) descriptor."
-        )
-
-    inner = body[len(prefix):-2]
-    fields = inner.split(",")
-    if len(fields) < 3:
-        raise DescriptorError(
-            "Descriptor must contain a threshold and at least two signer keys."
-        )
-
-    try:
-        threshold = int(fields[0])
-    except ValueError:
-        raise DescriptorError("Invalid multisig threshold.")
-
-    keys = fields[1:]
-    if not 1 <= threshold <= len(keys):
-        raise DescriptorError("Multisig threshold is outside the signer count.")
-    if len(set(keys)) != len(keys):
-        raise DescriptorError("Descriptor contains a duplicate signer key.")
-
-    own_origin_match = OWN_ORIGIN_RE.fullmatch(own_origin)
-    if not own_origin_match:
-        fail("Internal error: unexpected signer origin.")
-    own_fingerprint = own_origin_match.group(1).lower()
-    own_identity = (87, coin_type, ACCOUNT, None)
-
-    expected_prefix = "xpub" if coin_type == 0 else "tpub"
-    parsed = []
-    for key in keys:
-        match = KEY_RE.fullmatch(key)
-        if not match:
-            raise DescriptorError(
-                "Every signer key must include a fingerprint, supported multisig "
-                "account origin, xpub/tpub, and /<0;1>/*."
-            )
-
-        fingerprint, origin_path, xpub = match.groups()
-        identity = parse_signer_origin(origin_path, coin_type)
-
-        if not xpub.startswith(expected_prefix):
-            raise DescriptorError(
-                "Descriptor contains an extended public key for the wrong network."
-            )
-
-        parsed.append((fingerprint.lower(), identity, xpub, key))
-
-    if len({xpub for _, _, xpub, _ in parsed}) != len(parsed):
-        raise DescriptorError("Descriptor contains a duplicate account xpub.")
-
-    matches = [
-        key
-        for fingerprint, identity, xpub, key in parsed
-        if (
-            fingerprint == own_fingerprint
-            and identity == own_identity
-            and xpub == own_xpub
-        )
-    ]
-    if len(matches) != 1:
-        raise DescriptorError(
-            "The descriptor must contain this Core signer exactly once "
-            "(matching fingerprint, BIP87 account origin, and account xpub)."
-        )
-
-    return threshold, keys, matches[0]
-
-def validate_public_descriptor(bitcoin_cli, raw, coin_type, own_origin, own_xpub):
+def validate_public_descriptor(bitcoin_cli, raw, origin, account_xpub):
     info = rpc(bitcoin_cli, "getdescriptorinfo", raw)
     if not isinstance(info, dict):
         fail("Unexpected response from getdescriptorinfo.")
+
     if info.get("hasprivatekeys"):
         raise DescriptorError(
-            "Paste a public multisig descriptor only; private keys are not accepted."
+            "Paste a public descriptor only; private keys are not accepted."
         )
-    if not info.get("isrange") or not info.get("issolvable"):
-        raise DescriptorError("Descriptor must be ranged and solvable.")
 
-    body = descriptor_body(raw)
-    threshold, keys, own_key = parse_policy(
-        body, coin_type, own_origin, own_xpub
-    )
-    return info, body, threshold, keys, own_key
+    canonical = info.get("descriptor")
+    if not isinstance(canonical, str) or not canonical:
+        fail("Bitcoin Core did not return a canonical public descriptor.")
+
+    body = descriptor_body(canonical)
+    pattern = local_key_pattern(origin, account_xpub)
+    matches = list(pattern.finditer(body))
+
+    if not matches:
+        raise DescriptorError(
+            "The descriptor does not contain this Core signer's exact account key."
+        )
+
+    # If the xpub appears anywhere else, do not guess whether it is the same signer
+    # under a different or malformed origin.
+    if body.count(account_xpub) != len(matches):
+        raise DescriptorError(
+            "This signer's account xpub appears with an unexpected or ambiguous origin."
+        )
+
+    return info, body, pattern, len(matches)
 
 
 def derive_private_account(
@@ -312,33 +244,21 @@ def import_signing_descriptor(
     bitcoin_cli,
     wallet,
     public_info,
-    threshold,
-    keys,
-    own_key,
+    public_body,
+    pattern,
+    expected_occurrences,
     account_xpub,
     xprv,
 ):
-    private_keys = []
-    replaced = 0
-    for key in keys:
-        if key == own_key:
-            if key.count(account_xpub) != 1:
-                fail("Internal error while locating the signer account xpub.")
-            private_keys.append(key.replace(account_xpub, xprv, 1))
-            replaced += 1
-        else:
-            private_keys.append(key)
+    def replace_key(match):
+        return match.group(0).replace(account_xpub, xprv, 1)
 
-    if replaced != 1:
-        fail("Internal error while constructing the signing descriptor.")
+    private_body, replaced = pattern.subn(replace_key, public_body)
+    if replaced != expected_occurrences or replaced < 1:
+        fail("Internal error while substituting the local signing key.")
 
-    private_body = (
-        "wsh(sortedmulti("
-        + str(threshold)
-        + ","
-        + ",".join(private_keys)
-        + "))"
-    )
+    if account_xpub in private_body:
+        fail("Unexpected local account xpub remained after private substitution.")
 
     private_info = rpc(
         bitcoin_cli,
@@ -362,8 +282,12 @@ def import_signing_descriptor(
         fail("Bitcoin Core did not return a descriptor checksum.")
 
     private_descriptor = f"{private_body}#{checksum}"
+
+    # Core only permits active descriptors where that concept applies. Ranged
+    # descriptors are made active; fixed descriptors are still imported for signing.
+    active = bool(public_info.get("isrange"))
     request = json.dumps(
-        [{"desc": private_descriptor, "active": True, "timestamp": "now"}],
+        [{"desc": private_descriptor, "active": active, "timestamp": "now"}],
         separators=(",", ":"),
     )
     result = rpc(
@@ -388,27 +312,33 @@ def import_signing_descriptor(
             "Sensitive descriptor material was not printed."
         )
 
+    return active
 
-def verify_signer(bitcoin_cli, wallet, account_xpub):
-    options = json.dumps({"active_only": True}, separators=(",", ":"))
+
+def verify_signer(bitcoin_cli, wallet, account_xpub, public_descriptor, active):
+    options = json.dumps({"active_only": False}, separators=(",", ":"))
     keys = rpc(bitcoin_cli, "gethdkeys", options, wallet=wallet)
     if not isinstance(keys, list):
         fail("Unexpected response from gethdkeys.")
 
-    private_keys = [item for item in keys if item.get("has_private") is True]
-    if len(private_keys) != 1:
-        fail("Expected exactly one private HD key in the active multisig descriptor.")
-
     own = [item for item in keys if item.get("xpub") == account_xpub]
     if len(own) != 1 or own[0].get("has_private") is not True:
-        fail("Bitcoin Core does not report this BIP87 account xpub as signable.")
+        fail("Bitcoin Core does not report this account xpub as signable.")
 
     descriptors = own[0].get("descriptors")
-    if not isinstance(descriptors, list) or not any(
-        isinstance(item, dict) and item.get("active") is True
+    if not isinstance(descriptors, list):
+        fail("Bitcoin Core did not report descriptors for the local account key.")
+
+    matching = [
+        item
         for item in descriptors
-    ):
-        fail("The signer's multisig descriptor is not active.")
+        if isinstance(item, dict) and item.get("desc") == public_descriptor
+    ]
+    if len(matching) != 1:
+        fail("Bitcoin Core did not report the expected imported descriptor.")
+
+    if bool(matching[0].get("active")) != active:
+        fail("Imported descriptor active state did not match the requested state.")
 
 
 def main():
@@ -418,7 +348,7 @@ def main():
     bitcoin_cli = sys.argv[1]
     qr_bin = sys.argv[2]
 
-    print("Core Helper - Multisig Signer")
+    print("Bitcoin Core - Descriptor Signer")
     print()
 
     version, chain, coin_type = core_info(bitcoin_cli)
@@ -426,38 +356,40 @@ def main():
     print(f"Network: {chain}")
     print()
 
+    account_type = get_account_type()
     wallet = get_wallet_name()
     create_blank_wallet(bitcoin_cli, wallet)
-    root_xpub, path, origin, account_xpub = add_root_and_derive_public(
-        bitcoin_cli, wallet, coin_type
+
+    root_xpub, path, origin, account_xpub, account_label = (
+        add_root_and_derive_public(
+            bitcoin_cli, wallet, coin_type, account_type
+        )
     )
     key_expression = origin + account_xpub
 
     print()
-    print("BIP87 multisig key:")
+    print(f"{account_label} signer key:")
     print(key_expression)
     print()
-    print("This is public information. Add it to the multisig quorum.")
+    print("This is public information. Add it to the wallet policy.")
     print("Verify that the scanned QR text exactly matches the text above.")
     show_qr(qr_bin, key_expression)
 
     print()
-    print(
-        "Build the complete public wsh(sortedmulti(...)) descriptor "
-        "on the coordinator."
-    )
+    print("Build/export the complete PUBLIC descriptor on the coordinator.")
+    print("Any descriptor syntax supported by this Bitcoin Core version is allowed.")
     print("Paste it here when ready. A checksum is optional.")
     print()
 
     while True:
-        raw = input("Public multisig descriptor: ").strip()
+        raw = input("Public descriptor: ").strip()
         if not raw:
             print("Descriptor cannot be blank.")
             continue
         try:
-            public_info, _body, threshold, keys, own_key = (
+            public_info, public_body, pattern, occurrences = (
                 validate_public_descriptor(
-                    bitcoin_cli, raw, coin_type, origin, account_xpub
+                    bitcoin_cli, raw, origin, account_xpub
                 )
             )
             break
@@ -472,13 +404,13 @@ def main():
         bitcoin_cli, wallet, root_xpub, path, origin, account_xpub
     )
     try:
-        import_signing_descriptor(
+        active = import_signing_descriptor(
             bitcoin_cli,
             wallet,
             public_info,
-            threshold,
-            keys,
-            own_key,
+            public_body,
+            pattern,
+            occurrences,
             account_xpub,
             xprv,
         )
@@ -487,19 +419,22 @@ def main():
         # lifetime as short as practical and never print, persist, or pass it in argv.
         del xprv
 
-    verify_signer(bitcoin_cli, wallet, account_xpub)
+    verify_signer(
+        bitcoin_cli,
+        wallet,
+        account_xpub,
+        public_info["descriptor"],
+        active,
+    )
 
     print()
     print("Signer ready.")
     print(f"Wallet: {wallet}")
-    print(f"BIP87 path: {path}")
+    print(f"Signer path: {path}")
+    print("Bitcoin Core accepted the descriptor and reports this account key as private.")
     print(
-        "Bitcoin Core reports exactly one private key "
-        "in the active multisig descriptor."
-    )
-    print(
-        "Back up the wallet before funding the quorum, "
-        "then test with disposable funds."
+        "Back up the wallet before funding the policy, "
+        "then verify the policy and test with disposable funds."
     )
 
 
