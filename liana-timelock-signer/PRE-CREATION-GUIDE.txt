@@ -1,0 +1,52 @@
+PRE-CREATION GUIDE
+
+This is the Liana P2WSH timelock signer path.
+
+Before creating the signer:
+
+[ ] Verify the Tails ISO.
+[ ] Verify Bitcoin Core v32.0rc2 and the signing-key fingerprints you trust.
+[ ] Place bitcoin-32.0rc2-x86_64-linux-gnu.tar.gz one directory above this folder.
+[ ] Use dedicated physically air-gapped hardware where practical.
+[ ] Prepare secure backup media.
+[ ] Prepare the Liana environment where the public policy will be constructed.
+[ ] Decide whether this Core signer will use BIP87 or BIP48 native-P2WSH.
+[ ] Understand that this tool supports P2WSH Liana descriptors only; Taproot tr(...) is intentionally unsupported.
+[ ] Understand that this tool does not interpret or approve the Liana policy for you.
+[ ] Plan to verify the final policy, timelocks, keys, and receive addresses independently in Liana.
+[ ] Have disposable funds or a test network available for an end-to-end signing test.
+
+SUPPORTED CORE SIGNER PATHS
+
+BIP87:
+    m/87h/coin_typeh/0h
+
+BIP48 native-P2WSH:
+    m/48h/coin_typeh/0h/2h
+
+A single Liana descriptor may contain both conventions. Only the one you choose for this Core signer becomes private in this wallet.
+
+WHAT THE TOOL WILL DO
+
+1. Create a blank private-key-enabled Bitcoin Core descriptor wallet.
+2. Ask Core to generate a fresh HD root with addhdkey.
+3. Derive the selected BIP87 or BIP48 account.
+4. Display the public account key as text + QR.
+5. You add that key to the Liana policy.
+6. Export the complete PUBLIC Liana descriptor from Liana.
+7. Paste the descriptor into the offline signer.
+8. Core parses and canonicalizes the Miniscript descriptor.
+9. The overlay confirms it is ranged, solvable, top-level wsh(...), contains older(...), and contains this signer.
+10. Core derives this signer's selected account xprv internally.
+11. The helper substitutes only this signer's exact selected account identity.
+12. Core must prove the public policy did not change.
+13. The private descriptor is imported.
+14. Core verifies the local account key is signable and active.
+
+The xprv/private descriptor are never intentionally printed, QR encoded, copied to the clipboard, or passed in process arguments.
+
+POLICY WARNING
+
+A descriptor can pass all structural checks and still contain the wrong recovery delay, wrong keys, or an unsafe policy.
+
+Verify the Liana policy independently before funding it.
