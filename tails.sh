@@ -4,8 +4,8 @@ set -e
 here=$(CDPATH='' cd -- "$(dirname -- "$0")" && pwd)
 umask 077
 
-project_slug="core-multisig-signer"
-output_dir_name="signer-wallets"
+project_slug="core-descriptor-signer"
+output_dir_name="descriptor-signer-wallets"
 
 zenity --text-info \
     --title="Pre-Creation Guide" \
@@ -14,7 +14,7 @@ zenity --text-info \
     --height=700 \
     >/dev/null 2>&1 &
 
-echo "Please read PRE-CREATION-GUIDE.txt before creating a signer, if you have not already done so."
+echo "Please read PRE-CREATION-GUIDE.txt before creating a descriptor signer, if you have not already done so."
 
 if ! command -v python3 >/dev/null 2>&1; then
     echo "Error: python3 was not found." >&2
@@ -104,4 +104,4 @@ setsid -f zenity --text-info \
     </dev/null >/dev/null 2>&1
 
 echo "Please read POST-CREATION-GUIDE.txt."
-printf '\nSigner creation complete. You may now close this window.\n'
+printf '\nDescriptor signer creation complete. You may now close this window.\n'
