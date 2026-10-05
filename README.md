@@ -12,6 +12,8 @@ The helper no longer tries to understand or whitelist wallet-policy shapes such 
 git clone https://github.com/Jakob-997/Bitcoin-Core-Multisig-Quorum-Signer.git
 ```
 
+The repository slug is retained for continuity; the project itself is now the more general **Bitcoin Core Descriptor Signer**.
+
 ## Quick start
 
 > For meaningful funds, use dedicated physically air-gapped hardware where practical. Software networking shutdown is defense in depth.
