@@ -10,7 +10,7 @@ Back up the wallet and preserve wallet output on secure persistent/offline media
 
 AFTER STEP 2
 
-The complete supplied public descriptor has been imported and verified. New branches are inactive for address generation but available for signing; use the coordinator to generate receive/change addresses. Core's default range applies to new ranged imports. Existing exact branches retain their prior state.
+The complete supplied public descriptor has been imported and verified. Supported ranged policies are active for address generation. Native P2WSH multisig uses the bech32 address type in Core Receive. Other valid policies remain available for signing; use the coordinator for their addresses. Core's default range applies to new ranged imports. Existing address indexes, ranges and timestamps are retained; earlier inactive address policies are activated on repeat import.
 
 Independently verify fingerprints, origins, cosigners, thresholds, timelocks, recovery paths, Taproot scripts, and the first receive/change addresses. Core import is not proof of policy intent or enough signing keys to spend.
 

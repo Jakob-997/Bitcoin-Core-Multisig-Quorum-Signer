@@ -16,7 +16,7 @@ Require one exact descriptor extended public key to appear in every branch and h
 
 For each missing public branch, replace every exact occurrence of the chosen xpub, preserving any Core-canonical origin and child suffix. Core must recognize private keys and canonicalize the substituted branch back to exactly the original public descriptor, without introducing multipath expansion. Only then import it. Origin annotations do not establish ownership; the exact xpub and private/public equality do. Human origin and policy verification remain necessary.
 
-New imports are inactive so address-generation limitations do not restrict valid policies such as combo. Exactly two multipath branches use Core's second-branch internal convention. New ranged imports use Core's default range. Existing exact public branches are skipped, retaining their timestamp, range, next index, and active state. Finally, gethdkeys must report the selected account privately held, attached to every exact public branch, and with the expected active state.
+Ranged pkh, wpkh, sh, wsh, and tr policies with at most two branches are activated for address generation. This classification affects activation only; other valid descriptor shapes remain accepted for signing. Exactly two multipath branches use Core's second-branch internal convention. Existing inactive address-capable branches are reimported with the same private key and preserved timestamp, range and next index. Existing active branches are skipped. Finally, gethdkeys verifies private ownership, all public branches and expected activation state.
 
 ## Interruption
 

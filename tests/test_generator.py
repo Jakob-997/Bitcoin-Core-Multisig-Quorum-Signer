@@ -45,6 +45,52 @@ class BoundaryTests(unittest.TestCase):
             g.main()
         rpc.assert_called_once_with("cli", "gethdkeys", wallet="selected-wallet")
 
+    def test_address_activation_and_existing_wallet_repair(self):
+        for policy, ranged, count, expected in [
+            ("wsh(sortedmulti(2,{key}/0/*,tpubOTHER/0/*))", True, 2, True),
+            ("combo({key}/0/*)", True, 1, False),
+            ("pkh({key}/0/0)", False, 1, False),
+            ("pk({key}/0/*)", True, 1, False),
+            ("wpkh({key}/0/*)", True, 3, False),
+        ]:
+            key = self.origin + self.xpub
+            descs = [policy.format(key=key).replace("/0/", f"/{i}/") + "#sum" for i in range(count)]
+            info = {"descriptor": descs[0], "isrange": ranged, "multipath_expansion": descs}
+            for repairing in [False, True]:
+                with self.subTest(policy=policy, repairing=repairing):
+                    old = [{"desc": d, "active": False, "internal": i == 1,
+                            "timestamp": 123, "range": [0, 20], "next_index": 7}
+                           for i, d in enumerate(descs)] if repairing else []
+                    def rpc(cli, method, *args, **kwargs):
+                        if method == "getdescriptorinfo": return info
+                        if method == "listdescriptors": return {"descriptors": old}
+                        if method == "gethdkeys":
+                            return [{"xpub": self.xpub, "has_private": True, "xprv": "secret"}]
+                        raise AssertionError(method)
+                    with patch.object(g, "rpc", side_effect=rpc), \
+                            patch.object(g, "import_signing_descriptor") as imported, \
+                            patch.object(g, "verify_signer") as verified, \
+                            contextlib.redirect_stdout(io.StringIO()):
+                        g.import_public_descriptor("cli", "wallet", "public")
+                    self.assertEqual(imported.call_count, count if expected or not repairing else 0)
+                    for i, call in enumerate(imported.call_args_list):
+                        self.assertEqual(call.kwargs["active"], expected)
+                        self.assertEqual(call.kwargs["previous"], old[i] if repairing else None)
+                        self.assertEqual(call.kwargs["internal"], i == 1 if repairing else count == 2 and i == 1)
+                    self.assertEqual(verified.call_args.args[-1], dict.fromkeys(descs, expected))
+
+    def test_activation_reimport_preserves_address_cursor(self):
+        desc = f"wsh(sortedmulti(2,{self.origin}{self.xpub}/0/*,tpubOTHER/0/*))#sum"
+        responses = [{"hasprivatekeys": True, "descriptor": desc, "checksum": "sum"}, [{"success": True}]]
+        previous = {"timestamp": 123, "range": [0, 20], "next_index": 7}
+        with patch.object(g, "rpc", side_effect=responses) as rpc:
+            g.import_signing_descriptor("cli", "wallet", desc, g.descriptor_body(desc),
+                g.local_key_pattern(self.origin, self.xpub), 1, self.xpub, "secret",
+                active=True, previous=previous)
+        entry = json.loads(rpc.call_args.args[2])[0]
+        self.assertTrue(entry["active"])
+        self.assertEqual({field: entry[field] for field in previous}, previous)
+
     def test_rejects_private_missing_and_ambiguous_keys(self):
         key = self.origin + self.xpub
         for info in [
@@ -201,12 +247,43 @@ class CoreIntegrationTests(unittest.TestCase):
                         g.import_public_descriptor(cli, wallet, raw)
                     info = g.rpc(cli, "getdescriptorinfo", raw)
                     descs = info.get("multipath_expansion", [info["descriptor"]])
-                    g.verify_signer(cli, wallet, xpub, descs)
+                    states = {d["desc"]: d["active"] for d in g.rpc(cli, "listdescriptors", wallet=wallet)["descriptors"]}
+                    g.verify_signer(cli, wallet, xpub, descs, states)
                     stored = g.rpc(cli, "listdescriptors", wallet=wallet)["descriptors"]
                     self.assertTrue(set(descs).issubset({d["desc"] for d in stored}))
                     g.rpc(cli, "unloadwallet", wallet)
                     g.rpc(cli, "loadwallet", wallet)
-                    g.verify_signer(cli, wallet, xpub, descs)
+                    g.verify_signer(cli, wallet, xpub, descs, states)
+
+    def test_two_of_two_receive_and_change_after_repair(self):
+        cli = os.environ["CORE_TEST_CLI"]
+        wallet = "two-of-two-address-repair"
+        with patch("builtins.input", side_effect=["1", wallet]), contextlib.redirect_stdout(io.StringIO()):
+            g.create_signer(cli, "/bin/true", 1)
+        account = next(key for key in g.rpc(cli, "gethdkeys", '{"private":true}', wallet=wallet)
+                       if any(d["desc"].startswith("unused([") for d in key["descriptors"]))
+        public = g.descriptor_body(account["descriptors"][0]["desc"])[7:-1]
+        root = g.rpc(cli, "addhdkey", wallet=wallet)["xpub"]
+        other = g.rpc(cli, "derivehdkey", "m/87h/1h/1h", json.dumps({"hdkey": root}), wallet=wallet)
+        raw = f"wsh(sortedmulti(2,{public}/<0;1>/*,{other['origin']}{other['xpub']}/<0;1>/*))"
+        descs, bodies, pattern, counts = g.validate_public_descriptor(cli, raw, None, account["xpub"])
+        for i, (desc, body, count) in enumerate(zip(descs, bodies, counts)):
+            g.import_signing_descriptor(cli, wallet, desc, body, pattern, count,
+                                        account["xpub"], account["xprv"], internal=i == 1)
+        before = {d["desc"]: d for d in g.rpc(cli, "listdescriptors", wallet=wallet)["descriptors"]}
+        g.import_public_descriptor(cli, wallet, raw)
+        after = {d["desc"]: d for d in g.rpc(cli, "listdescriptors", wallet=wallet)["descriptors"]}
+        for desc in descs:
+            self.assertTrue(after[desc]["active"])
+            for field in ("range", "next_index", "timestamp"):
+                self.assertEqual(after[desc][field], before[desc][field])
+        receive = g.rpc(cli, "getnewaddress", "", "bech32", wallet=wallet)
+        change = g.rpc(cli, "getrawchangeaddress", "bech32", wallet=wallet)
+        self.assertEqual([receive], g.rpc(cli, "deriveaddresses", descs[0], "[0,0]"))
+        self.assertEqual([change], g.rpc(cli, "deriveaddresses", descs[1], "[0,0]"))
+        before = g.rpc(cli, "listdescriptors", wallet=wallet)
+        g.import_public_descriptor(cli, wallet, raw)
+        self.assertEqual(before, g.rpc(cli, "listdescriptors", wallet=wallet))
 
     def test_existing_active_policy_state_is_preserved(self):
         cli = os.environ["CORE_TEST_CLI"]

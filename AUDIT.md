@@ -3,7 +3,7 @@
 Review date: 2026-10-07
 Base project: `dab58d8676a5fa29f159eef5f384b400f3030e75`
 Feature Overlay reviewed: `5011c687c4c10ce9f70bef4dfbac9dfe89825406`
-Generator blob: `4d490875b15460edbad4f4d833c351227848af20`
+Generator blob: `3fd857311bbd2df343c7895eb7f2edfdce455eee`
 Launcher blob: `08d29a5ca29b7d3b48f43aaa1a21bde19e367d4e`
 Core version: v32.0rc2
 Core source: `bc795e60dbb2c6e9c9556949731912429290626a`
@@ -19,7 +19,7 @@ Two independent operations replace the continuous create/import flow and custom 
 
 `sh tails.sh import` selects an existing wallet, validates a public descriptor with Core, and requires an exact descriptor xpub that the selected wallet holds privately in every Core-expanded branch. Only after ownership is checked does the generator request Core's private inventory and substitute one matching account key. Every substituted branch must canonicalize to the exact original public descriptor. Origin annotations and child suffixes are preserved; ownership depends on the exact xpub, not a policy shape or particular origin annotation. No wallet or replacement key is created during import.
 
-Core parses the policy; there is no multisig/Miniscript whitelist or custom cryptography. New branches are inactive, so ranged combo and other valid forms are not rejected by address-generation restrictions. Core wallet-import restrictions still apply. Core's two-branch internal convention and full multipath expansion are preserved. Existing exact branches are verified/skipped, preserving range, next index, timestamp, and active state; interruption between branches is retried with the same wallet and supplied descriptor.
+Core parses the policy; there is no multisig/Miniscript whitelist or custom cryptography. Supported ranged address policies are active; other forms, including combo, remain available for signing. Core wallet-import restrictions still apply. Core's two-branch internal convention and full multipath expansion are preserved. Existing active branches are verified/skipped, preserving range, next index and timestamp; inactive address policies are repaired on reimport; interruption between branches is retried with the same wallet and supplied descriptor.
 
 Sensitive inputs use bitcoin-cli stdin and private/public-descriptor errors are redacted. Private inventory is briefly held in Python memory; it is not intentionally printed, persisted, passed in argv, copied to clipboard, or QR encoded. Python strings cannot be reliably zeroized. Core owns wallet storage.
 
@@ -51,3 +51,7 @@ Wallet output must survive Tails shutdown on secure persistent/offline media. No
 ## Import public-key display follow-up
 
 The selected wallet's public account key and origin are displayed before the descriptor prompt. The display uses public gethdkeys only, deduplicates repeated account keys, and omits the unused master root when account origins are available. A regression test verifies prompt order, selected-wallet lookup, and exclusion of private and watch-only keys. Windows suite: ten tests passed, four environment-dependent tests skipped. Earlier actual-Core evidence above predates this display-only change.
+
+## Address generation correction
+
+Supported ranged address policies now activate receive/change descriptors. Reimport repairs previous inactive imports while preserving timestamp, range and next index. Other valid forms remain importable for signing. Windows regression tests cover new two-of-two imports, inactive repair, non-address policies and preservation of reimport parameters. Twelve tests passed; five integration/environment tests skipped. A real-Core two-of-two receive/change and retry test was added but could not be executed because WSL access is denied. Earlier real-Core results predate this correction.

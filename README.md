@@ -26,7 +26,7 @@ The steps depend on Core's wallet files, not a separate session/checkpoint file.
 
 ## Interruptions and repeated import
 
-Press Ctrl-C or close the terminal if step 2 must stop. Keep the wallet output, rerun `sh tails.sh import`, select the same wallet, and paste the same descriptor. Branches already present are verified and skipped; missing branches are imported. Repeated import preserves the existing branches' range, next index, timestamps, and active state. A partially imported wallet must not be funded until the whole policy passes verification.
+Press Ctrl-C or close the terminal if step 2 must stop. Keep the wallet output, rerun `sh tails.sh import`, select the same wallet, and paste the same descriptor. Branches already present are verified and skipped; missing branches are imported. Repeated import preserves the existing branches' range, next index, and timestamps. Ranged address policies are activated for receiving/change, including policies imported inactive by earlier versions. Rerun import with the same wallet and descriptor to repair that state. A partially imported wallet must not be funded until the whole policy passes verification.
 
 Step 1 refuses an existing wallet name; use a new name for a new signer. Each successful step shuts down its own Core process cleanly and removes its fresh temporary extraction. Failure or interruption retains the extraction and wallet output; failed shutdown retains runtime state too. The project and original archive are preserved. Close conflicting Core instances before running the launcher.
 
@@ -34,7 +34,7 @@ Step 1 refuses an existing wallet name; use a new name for a new signer. Each su
 
 There is no policy-shape whitelist: Core parses multisig, Miniscript, Taproot, combo, fixed, and multipath forms. The descriptor must be public, contain an exact HD xpub privately held by the selected wallet, preserve its public policy after substitution, and pass Core wallet import. Parser acceptance alone does not guarantee import; for example, a cosigner's hardened derivation may need unavailable private keys.
 
-Core expands multipath descriptors. Every branch is checked and imported separately; for exactly two branches, the second is internal, matching Core's convention. Newly imported descriptors are inactive for signing, avoiding address-generation restrictions such as ranged `combo()`. Existing branches retain their active state. Use the coordinator to generate addresses. New ranged imports use Core's default keypool range; extend it through Core if needed.
+Core expands multipath descriptors. Every branch is checked and imported separately; for exactly two branches, the second is internal, matching Core's convention. Ranged pkh, wpkh, sh, wsh, and tr policies with one or two branches are activated for address generation. In Core Receive, select the matching address type (native P2WSH multisig uses bech32). Other valid policies, including combo, bare pk, fixed descriptors, and policies with more than two branches, remain available for signing; use the coordinator to derive their addresses. New ranged imports use Core's default keypool range; extend it through Core if needed.
 
 Origin annotations and child suffixes from the public policy are preserved exactly after Core canonicalization. Ownership is bound to the exact xpub, rather than requiring a particular origin annotation or policy shape. Independently check fingerprints, origins, thresholds, timelocks, recovery paths, and addresses before funding. Successful import does not prove policy intent.
 

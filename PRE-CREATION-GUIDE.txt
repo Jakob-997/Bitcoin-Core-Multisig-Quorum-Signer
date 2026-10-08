@@ -31,7 +31,7 @@ STEP 2 -- SELECT WALLET AND IMPORT PUBLIC DESCRIPTOR
 
 Later, run sh tails.sh and type import at the prompt. Select the existing wallet from the numbered list and paste the complete PUBLIC descriptor. Core must report that the selected wallet privately owns an exact descriptor xpub in every branch. An unrelated or watch-only wallet is rejected. No replacement key or new wallet is created during import.
 
-The helper substitutes a matching private key in memory, checks that every public branch is unchanged, imports missing branches, and verifies the result. Newly imported descriptors are inactive for signing; generate addresses on the coordinator. Core's default range applies to new ranged imports.
+The helper substitutes a matching private key in memory, checks that every public branch is unchanged, imports missing branches, and verifies the result. Supported ranged address policies are activated for receiving/change. Other valid policies remain available for signing; generate their addresses on the coordinator. Repeating import repairs an earlier inactive address policy without resetting its next address index. Core's default range applies to new ranged imports.
 
 If interrupted, preserve the wallet output and rerun sh tails.sh import with the SAME wallet and descriptor. Already imported branches are verified and skipped. Do not fund a partial import before completion.
 

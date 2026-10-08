@@ -257,6 +257,8 @@ def import_signing_descriptor(
     account_xpub,
     xprv,
     internal=False,
+    active=False,
+    previous=None,
 ):
     def replace_key(match):
         return match.group(0).replace(account_xpub, xprv, 1)
@@ -288,10 +290,13 @@ def import_signing_descriptor(
 
     private_descriptor = f"{private_body}#{checksum}"
 
-    # Signing does not require address generation. Some valid descriptors cannot
-    # be active (e.g. combo), so do not impose that restriction on the policy.
+    entry = {"desc": private_descriptor, "active": active, "internal": internal, "timestamp": "now"}
+    if previous:
+        for field in ("timestamp", "range", "next_index"):
+            if field in previous:
+                entry[field] = previous[field]
     request = json.dumps(
-        [{"desc": private_descriptor, "active": False, "internal": internal, "timestamp": "now"}],
+        [entry],
         separators=(",", ":"),
     )
     result = rpc(
@@ -400,11 +405,19 @@ def import_public_descriptor(bitcoin_cli, wallet, raw):
     xpub = owned[0]
     descs, bodies, pattern, counts = validate_public_descriptor(bitcoin_cli, raw, None, xpub)
     print(f"Wallet {wallet} owns a matching descriptor key. Importing the public policy.")
-    existing = {item["desc"]: item["active"] for item in rpc(
+    # Core supports address generation for these ranged output types. Other
+    # valid policies remain importable for signing, including combo and bare pk.
+    address_capable = len(descs) <= 2 and info.get("isrange") is True and all(
+        body.startswith(("pkh(", "wpkh(", "sh(", "wsh(", "tr(")) for body in bodies
+    )
+    existing = {item["desc"]: item for item in rpc(
         bitcoin_cli, "listdescriptors", wallet=wallet
     )["descriptors"]}
-    active_states = {desc: existing.get(desc, False) for desc in descs}
-    if any(desc not in existing for desc in descs):
+    active_states = {desc: address_capable or existing.get(desc, {}).get("active", False) for desc in descs}
+    pending = [desc for desc in descs if desc not in existing or (
+        active_states[desc] and not existing[desc]["active"]
+    )]
+    if pending:
         # Core exports wallet-owned keys; no seed/session file or policy parser.
         private_keys = rpc(bitcoin_cli, "gethdkeys", '{"private":true}', wallet=wallet, sensitive=True)
         matches = []
@@ -413,16 +426,21 @@ def import_public_descriptor(bitcoin_cli, wallet, raw):
             if len(matches) != 1 or not isinstance(matches[0].get("xprv"), str):
                 fail("Core did not return the selected wallet's matching private key.")
             for index, (desc, body, count) in enumerate(zip(descs, bodies, counts)):
-                if desc not in existing:
+                if desc in pending:
                     import_signing_descriptor(
                         bitcoin_cli, wallet, desc, body, pattern, count, xpub, matches[0]["xprv"],
-                        internal=len(descs) == 2 and index == 1,
+                        internal=existing.get(desc, {}).get("internal", len(descs) == 2 and index == 1),
+                        active=active_states[desc], previous=existing.get(desc),
                     )
         finally:
             # Python strings cannot be reliably zeroized; do not persist/print them.
             del private_keys, matches
     verify_signer(bitcoin_cli, wallet, xpub, descs, active_states)
     print("Signer ready. Core reports the imported policy and its wallet-owned private key.")
+    if address_capable:
+        print("Receive addresses are enabled in Core. Choose the imported policy's address type in Receive.")
+    else:
+        print("This policy is imported for signing. Generate its addresses with the coordinator.")
 
 
 def show_wallet_public_keys(bitcoin_cli, wallet):
