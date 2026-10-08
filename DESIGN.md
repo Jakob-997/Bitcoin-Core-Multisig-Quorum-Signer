@@ -1,123 +1,41 @@
 # Bitcoin Core Descriptor Signer Design
 
-This utility follows the Bitcoin Core Feature Overlay architecture: small Core-facing logic, a separate Tails launcher, and separate human/audit procedure.
+This follows the Feature Overlay's three layers: generator.py for Core RPC logic, tails.sh for OS/runtime enforcement, and guides for human verification and backup.
 
-## Core principle
+## Step 1: create and export
 
-**Bitcoin Core validates the descriptor policy. The helper validates only the local signer boundary.**
+Create a new blank private descriptor wallet, use `addhdkey` for a root, and `derivehdkey` for a BIP87 or BIP48 native-P2WSH account. Derive the private account through Core and import it as `unused([origin]xprv)`. Verify through `gethdkeys` that Core stores the account privately with the exact public descriptor, then display the public `[origin]xpub` and QR. The step returns successfully without requiring a public wallet policy.
 
-The previous design parsed `wsh(sortedmulti(...))` itself and imposed policy-specific derivation rules. That became unnecessary once the signer needed to work with richer descriptors such as Liana Miniscript.
+The private account lives in Core's wallet, so no custom recovery/session format is needed. Creating a signer refuses an existing wallet name. Backups and persistent wallet storage are required before shutting down Tails.
 
-Removing the policy parser reduces custom security-critical code.
+## Step 2: select and import
 
-## Local signer construction
+Select a wallet returned by `listwalletdir`, load it if necessary, and require a private-key descriptor wallet. Parse the complete public descriptor through `getdescriptorinfo`; reject private input. Use Core's full `multipath_expansion` or single `descriptor`.
 
-Bitcoin Core creates the root with `addhdkey` and derives one selected account:
+Require one exact descriptor extended public key to appear in every branch and have `has_private=true` in the selected wallet's `gethdkeys` inventory. Only after that public ownership check, request the private inventory from Core, and select the matching xprv. No wallet or key is created by this step. When several owned keys qualify, one is used; this helper adds one local signer, not all possible local signatures.
 
-```text
-BIP87:
-m/87h/coin_typeh/0h
+For each missing public branch, replace every exact occurrence of the chosen xpub, preserving any Core-canonical origin and child suffix. Core must recognize private keys and canonicalize the substituted branch back to exactly the original public descriptor, without introducing multipath expansion. Only then import it. Origin annotations do not establish ownership; the exact xpub and private/public equality do. Human origin and policy verification remain necessary.
 
-BIP48 native-P2WSH:
-m/48h/coin_typeh/0h/2h
-```
+New imports are inactive so address-generation limitations do not restrict valid policies such as combo. Exactly two multipath branches use Core's second-branch internal convention. New ranged imports use Core's default range. Existing exact public branches are skipped, retaining their timestamp, range, next index, and active state. Finally, gethdkeys must report the selected account privately held, attached to every exact public branch, and with the expected active state.
 
-The account selection is explicit before the public key is exported.
+## Interruption
 
-## Public descriptor handling
+Core persists the wallet and account between steps. Step 2 can be interrupted and run again with the selected wallet and same public descriptor. Imports are not transactional across branches: completed branches stay in Core and are verified/skipped on retry. No separate checkpoint controls the policy; the user supplies the policy for each run. Do not fund a partial import before whole-policy verification.
 
-The complete PUBLIC descriptor is passed directly to Core `getdescriptorinfo`.
+Step 1 interrupted before account storage/export is not claimed complete. Preserve that wallet for inspection; step 1 does not overwrite it. Recovery cannot reconstruct lost private material.
 
-The helper requires only:
+## Runtime lifecycle
 
-- Core accepts the descriptor;
-- Core reports no private keys in the supplied descriptor;
-- the canonical descriptor contains this signer's exact `[origin]xpub` identity.
+With no argument, the launcher displays the two operations and reads the literal word create or import, retrying invalid choices. EOF exits before any OS/network action. Explicit create/import command arguments bypass the prompt.
 
-The helper deliberately does not inspect:
+The launcher verifies the pinned v32.0rc2 archive, starts one offline foreground Core child using fresh runtime state, and selects the persistent wallet directory. It waits for its own child's clean shutdown without terminating unrelated Core processes. Successful step completion and clean shutdown permit deletion of the fresh extraction. Failure/interruption retains the extraction and wallet output; failed shutdown retains runtime too. The source project and original archive remain available.
 
-- outer descriptor type;
-- multisig threshold;
-- Miniscript structure;
-- timelock values;
-- other cosigner paths;
-- Taproot script trees;
-- whether the policy is sensible.
+## Scope and trust
 
-Those are policy/coordinator concerns and must be independently verified by the user.
+Core owns randomness, BIP32, descriptors, Miniscript, wallet storage, and signing. The helper owns the RPC sequence, wallet selection, exact xpub substitution, public-policy equality, verified postconditions, and runtime isolation. There is no multisig/policy whitelist or custom cryptography.
 
-## Exact-key binding
+Core parser and wallet-import restrictions still apply. Ownership lookup requires an HD xpub stored privately in the wallet; arbitrary fixed hex public keys or unstored descendants are not discovered. Ownership of one key does not imply enough signatures to spend every policy path. Thresholds, cosigners, timelocks, recovery semantics, and transaction details remain human/coordinator checks.
 
-After Core canonicalizes the descriptor, the helper searches for the exact local identity:
+Private inventory from Core is briefly held in Python memory and passed over stdin, never intentionally persisted or printed by the helper. Python strings cannot be reliably zeroized. Wallet encryption and physical/firmware compromise are outside this implementation. Pin changes require retesting the exact Core build. Keep Core logic small, OS changes in the launcher, and procedures in the guides.
 
-```text
-[exact-origin]exact-account-xpub
-```
-
-If the same account xpub appears anywhere with another/ambiguous origin, the helper aborts rather than guessing.
-
-The exact identity may occur more than once; every exact occurrence is replaced. This supports policies such as Liana where the same account key can participate in multiple branches.
-
-## Private substitution invariant
-
-Only after public validation does Core derive the matching account xprv.
-
-The helper substitutes only the exact local identity, preserving all descriptor syntax and child-derivation suffixes.
-
-The private descriptor then goes back to Core `getdescriptorinfo`.
-
-Import is allowed only if:
-
-- Core reports private keys are present;
-- Core's canonical public `descriptor` is exactly unchanged;
-- Core's `multipath_expansion` is exactly unchanged.
-
-This is the primary safety invariant.
-
-## Import and verification
-
-Ranged descriptors are imported active. Fixed descriptors are imported inactive but remain available for signing.
-
-After import, `gethdkeys` must report:
-
-- the local account xpub;
-- `has_private=true`;
-- the exact imported public descriptor;
-- the expected active state.
-
-## Trust boundary
-
-Bitcoin Core owns:
-
-- random key generation;
-- BIP32 derivation;
-- descriptor parsing;
-- Miniscript parsing;
-- descriptor canonicalization;
-- wallet storage;
-- PSBT signing.
-
-The helper owns:
-
-- choosing the local account convention;
-- binding the descriptor to the exact local key;
-- private substitution;
-- invariant checks;
-- launcher/environment orchestration.
-
-## Accepted limitations
-
-- A Core-valid descriptor can still represent a dangerous or unintended wallet policy.
-- This helper does not validate thresholds, timelocks, recovery semantics, or coordinator behavior.
-- Python strings containing private descriptor material cannot be reliably zeroized.
-- Wallet encryption is not implemented.
-- Physical/firmware compromise is outside the helper's ability to detect.
-- Exact support depends on the pinned Core version's descriptor implementation.
-
-## Maintenance rule
-
-1. Prefer Core validation over custom policy parsing.
-2. Re-review every generator change.
-3. Keep OS behavior in `tails.sh`.
-4. Keep policy-verification procedures in human documentation.
-5. Retest every Core-version change.
+Expert shortcuts: the menu labels are (c)reate and (i)mport. Type c or C for create, or i or I for import. Full words still work. The same letters can be supplied as launcher arguments (for example, sh tails.sh c).

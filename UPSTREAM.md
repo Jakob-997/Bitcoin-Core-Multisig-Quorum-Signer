@@ -19,23 +19,23 @@ Canonical repository:
 
 https://github.com/Jakob-997/Bitcoin-Core-Feature-Overlay
 
-Adopted overlay revision:
+Overlay revision reviewed for this update:
 
 ```text
-632648b88cdb867ab6372e2850e8a53d00f58552
+5011c687c4c10ce9f70bef4dfbac9dfe89825406
 ```
 
 The three-layer architecture remains:
 
-- `generator.py` â€” minimal Core-facing feature logic;
-- `tails.sh` â€” environment/isolation/runtime enforcement;
-- human/audit documents â€” preparation, policy verification, backup, recovery, review record.
+- `generator.py` — minimal Core-facing feature logic;
+- `tails.sh` — environment/isolation/runtime enforcement;
+- human/audit documents — preparation, policy verification, backup, recovery, review record.
 
 ## Current executable identities
 
 ```text
-generator.py: d204101565532767463ff31e51158f934e3d8e6e
-tails.sh:     29ce937406e0380dca9fbfc74605e154fcacf017
+generator.py: 26c6dbc0034a770f17f47a3ef359c8253c649973
+tails.sh:     08d29a5ca29b7d3b48f43aaa1a21bde19e367d4e
 ```
 
 The generator is no longer byte-identical to the original Core-Helper snapshot. It was deliberately simplified from a custom multisig-policy parser into a descriptor-agnostic signer that delegates descriptor parsing to Bitcoin Core.

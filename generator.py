@@ -176,12 +176,17 @@ def descriptor_body(raw):
 def local_key_pattern(origin, account_xpub):
     # getdescriptorinfo canonicalizes descriptor syntax. Match only this signer's
     # exact origin+xpub identity and require a descriptor-key boundary after it.
+    if origin is None:
+        # Core already parsed these key expressions. Preserve whichever valid
+        # origin the coordinator supplied, and bind ownership to the exact xpub.
+        return re.compile(r"(?<=[(,])(?:\[[^\[\]]*\])?" + re.escape(account_xpub) + r"(?=[/,)}])")
     identity = re.escape(origin + account_xpub)
     return re.compile(identity + r"(?=[/,)}])")
 
 
 def validate_public_descriptor(bitcoin_cli, raw, origin, account_xpub):
-    info = rpc(bitcoin_cli, "getdescriptorinfo", raw)
+    # Even a rejected paste may contain private keys; never echo Core's error.
+    info = rpc(bitcoin_cli, "getdescriptorinfo", raw, sensitive=True)
     if not isinstance(info, dict):
         fail("Unexpected response from getdescriptorinfo.")
 
@@ -190,27 +195,29 @@ def validate_public_descriptor(bitcoin_cli, raw, origin, account_xpub):
             "Paste a public descriptor only; private keys are not accepted."
         )
 
-    canonical = info.get("descriptor")
-    if not isinstance(canonical, str) or not canonical:
+    canonical = info.get("multipath_expansion", [info.get("descriptor")])
+    if not isinstance(canonical, list) or not canonical or not all(
+        isinstance(desc, str) and desc for desc in canonical
+    ):
         fail("Bitcoin Core did not return a canonical public descriptor.")
 
-    body = descriptor_body(canonical)
     pattern = local_key_pattern(origin, account_xpub)
-    matches = list(pattern.finditer(body))
+    bodies = [descriptor_body(desc) for desc in canonical]
+    occurrences = [len(list(pattern.finditer(body))) for body in bodies]
 
-    if not matches:
+    if not all(occurrences):
         raise DescriptorError(
             "The descriptor does not contain this Core signer's exact account key."
         )
 
     # If the xpub appears anywhere else, do not guess whether it is the same signer
     # under a different or malformed origin.
-    if body.count(account_xpub) != len(matches):
+    if any(body.count(account_xpub) != count for body, count in zip(bodies, occurrences)):
         raise DescriptorError(
             "This signer's account xpub appears with an unexpected or ambiguous origin."
         )
 
-    return info, body, pattern, len(matches)
+    return canonical, bodies, pattern, occurrences
 
 
 def derive_private_account(
@@ -243,12 +250,13 @@ def derive_private_account(
 def import_signing_descriptor(
     bitcoin_cli,
     wallet,
-    public_info,
+    public_descriptor,
     public_body,
     pattern,
     expected_occurrences,
     account_xpub,
     xprv,
+    internal=False,
 ):
     def replace_key(match):
         return match.group(0).replace(account_xpub, xprv, 1)
@@ -269,13 +277,10 @@ def import_signing_descriptor(
     if not isinstance(private_info, dict) or not private_info.get("hasprivatekeys"):
         fail("Bitcoin Core did not recognize the private signing descriptor.")
 
-    if private_info.get("descriptor") != public_info.get("descriptor"):
+    if private_info.get("descriptor") != public_descriptor:
         fail("Private-key substitution changed the public descriptor.")
-    if (
-        private_info.get("multipath_expansion")
-        != public_info.get("multipath_expansion")
-    ):
-        fail("Private-key substitution changed the multipath descriptor expansion.")
+    if private_info.get("multipath_expansion"):
+        fail("Private-key substitution introduced a multipath expansion.")
 
     checksum = private_info.get("checksum")
     if not isinstance(checksum, str) or not checksum:
@@ -283,11 +288,10 @@ def import_signing_descriptor(
 
     private_descriptor = f"{private_body}#{checksum}"
 
-    # Core only permits active descriptors where that concept applies. Ranged
-    # descriptors are made active; fixed descriptors are still imported for signing.
-    active = bool(public_info.get("isrange"))
+    # Signing does not require address generation. Some valid descriptors cannot
+    # be active (e.g. combo), so do not impose that restriction on the policy.
     request = json.dumps(
-        [{"desc": private_descriptor, "active": active, "timestamp": "now"}],
+        [{"desc": private_descriptor, "active": False, "internal": internal, "timestamp": "now"}],
         separators=(",", ":"),
     )
     result = rpc(
@@ -312,10 +316,8 @@ def import_signing_descriptor(
             "Sensitive descriptor material was not printed."
         )
 
-    return active
 
-
-def verify_signer(bitcoin_cli, wallet, account_xpub, public_descriptor, active):
+def verify_signer(bitcoin_cli, wallet, account_xpub, public_descriptors, active_states=None):
     options = json.dumps({"active_only": False}, separators=(",", ":"))
     keys = rpc(bitcoin_cli, "gethdkeys", options, wallet=wallet)
     if not isinstance(keys, list):
@@ -329,113 +331,121 @@ def verify_signer(bitcoin_cli, wallet, account_xpub, public_descriptor, active):
     if not isinstance(descriptors, list):
         fail("Bitcoin Core did not report descriptors for the local account key.")
 
-    matching = [
-        item
-        for item in descriptors
-        if isinstance(item, dict) and item.get("desc") == public_descriptor
-    ]
-    if len(matching) != 1:
-        fail("Bitcoin Core did not report the expected imported descriptor.")
-
-    if bool(matching[0].get("active")) != active:
-        fail("Imported descriptor active state did not match the requested state.")
+    for public_descriptor in public_descriptors:
+        matching = [
+            item for item in descriptors
+            if isinstance(item, dict) and item.get("desc") == public_descriptor
+        ]
+        expected_active = active_states.get(public_descriptor, False) if active_states else False
+        if len(matching) != 1 or matching[0].get("active") is not expected_active:
+            fail("Bitcoin Core did not report the expected signing descriptor and active state.")
 
 
-def main():
-    if len(sys.argv) != 3:
-        fail("Run this utility through tails.sh.")
-
-    bitcoin_cli = sys.argv[1]
-    qr_bin = sys.argv[2]
-
-    print("Bitcoin Core - Descriptor Signer")
-    print()
-
-    version, chain, coin_type = core_info(bitcoin_cli)
-    print(f"Bitcoin Core: {version}")
-    print(f"Network: {chain}")
-    print()
-
+def create_signer(bitcoin_cli, qr_bin, coin_type):
     account_type = get_account_type()
     wallet = get_wallet_name()
     create_blank_wallet(bitcoin_cli, wallet)
-
-    root_xpub, path, origin, account_xpub, account_label = (
-        add_root_and_derive_public(
-            bitcoin_cli, wallet, coin_type, account_type
-        )
+    root, path, origin, xpub, label = add_root_and_derive_public(
+        bitcoin_cli, wallet, coin_type, account_type
     )
-    key_expression = origin + account_xpub
+    # Store the account in Core itself, ready for a later, independent import.
+    public = rpc(bitcoin_cli, "getdescriptorinfo", f"unused({origin}{xpub})")["descriptor"]
+    private = derive_private_account(bitcoin_cli, wallet, root, path, origin, xpub)
+    try:
+        import_signing_descriptor(
+            bitcoin_cli, wallet, public, descriptor_body(public),
+            local_key_pattern(origin, xpub), 1, xpub, private,
+        )
+    finally:
+        del private
+    verify_signer(bitcoin_cli, wallet, xpub, [public])
+    print(f"\nWallet created: {wallet}")
+    print(f"{label} signer key:")
+    print(origin + xpub)
+    show_qr(qr_bin, origin + xpub)
+    print("Step 1 complete. Back up this wallet before closing or shutting down.")
+    print("Later, run sh tails.sh import and select this wallet to import your public descriptor.")
 
-    print()
-    print(f"{account_label} signer key:")
-    print(key_expression)
-    print()
-    print("This is public information. Add it to the wallet policy.")
-    print("Verify that the scanned QR text exactly matches the text above.")
-    show_qr(qr_bin, key_expression)
 
-    print()
-    print("Build/export the complete PUBLIC descriptor on the coordinator.")
-    print("Any descriptor syntax supported by this Bitcoin Core version is allowed.")
-    print("Paste it here when ready. A checksum is optional.")
-    print()
+def select_wallet(bitcoin_cli):
+    wallets = rpc(bitcoin_cli, "listwalletdir")["wallets"]
+    if not wallets:
+        fail("No wallets found. Run sh tails.sh create first or restore a wallet into the wallet directory.")
+    for index, item in enumerate(wallets, 1):
+        print(f"  {index}. {item['name']}")
+    choice = input("Select wallet number: ").strip()
+    if not choice.isdigit() or not 1 <= int(choice) <= len(wallets):
+        fail("Select a wallet number from the list.")
+    wallet = wallets[int(choice) - 1]["name"]
+    if wallet not in rpc(bitcoin_cli, "listwallets"):
+        rpc(bitcoin_cli, "loadwallet", wallet)
+    info = rpc(bitcoin_cli, "getwalletinfo", wallet=wallet)
+    if not info.get("descriptors") or not info.get("private_keys_enabled"):
+        fail("Select a private-key descriptor wallet.")
+    return wallet
 
+
+def import_public_descriptor(bitcoin_cli, wallet, raw):
+    info = rpc(bitcoin_cli, "getdescriptorinfo", raw, sensitive=True)
+    if info.get("hasprivatekeys"):
+        raise DescriptorError("Paste a public descriptor only; private keys are not accepted.")
+    branches = info.get("multipath_expansion", [info.get("descriptor")])
+    keys = rpc(bitcoin_cli, "gethdkeys", wallet=wallet)
+    owned = [key["xpub"] for key in keys if key.get("has_private") is True and all(
+        isinstance(desc, str) and local_key_pattern(None, key["xpub"]).search(descriptor_body(desc))
+        for desc in branches
+    )]
+    if not owned:
+        raise DescriptorError("The selected wallet does not own a descriptor extended key in every branch.")
+    xpub = owned[0]
+    descs, bodies, pattern, counts = validate_public_descriptor(bitcoin_cli, raw, None, xpub)
+    print(f"Wallet {wallet} owns a matching descriptor key. Importing the public policy.")
+    existing = {item["desc"]: item["active"] for item in rpc(
+        bitcoin_cli, "listdescriptors", wallet=wallet
+    )["descriptors"]}
+    active_states = {desc: existing.get(desc, False) for desc in descs}
+    if any(desc not in existing for desc in descs):
+        # Core exports wallet-owned keys; no seed/session file or policy parser.
+        private_keys = rpc(bitcoin_cli, "gethdkeys", '{"private":true}', wallet=wallet, sensitive=True)
+        matches = []
+        try:
+            matches = [key for key in private_keys if key.get("xpub") == xpub and key.get("has_private") is True]
+            if len(matches) != 1 or not isinstance(matches[0].get("xprv"), str):
+                fail("Core did not return the selected wallet's matching private key.")
+            for index, (desc, body, count) in enumerate(zip(descs, bodies, counts)):
+                if desc not in existing:
+                    import_signing_descriptor(
+                        bitcoin_cli, wallet, desc, body, pattern, count, xpub, matches[0]["xprv"],
+                        internal=len(descs) == 2 and index == 1,
+                    )
+        finally:
+            # Python strings cannot be reliably zeroized; do not persist/print them.
+            del private_keys, matches
+    verify_signer(bitcoin_cli, wallet, xpub, descs, active_states)
+    print("Signer ready. Core reports the imported policy and its wallet-owned private key.")
+
+
+def main():
+    if len(sys.argv) != 4 or sys.argv[3] not in {"create", "import"}:
+        fail("Run sh tails.sh create or sh tails.sh import.")
+    bitcoin_cli, qr_bin, step = sys.argv[1:]
+    version, chain, coin_type = core_info(bitcoin_cli)
+    print(f"Bitcoin Core: {version}\nNetwork: {chain}\n")
+    if step == "create":
+        create_signer(bitcoin_cli, qr_bin, coin_type)
+        return
+    wallet = select_wallet(bitcoin_cli)
     while True:
         raw = input("Public descriptor: ").strip()
         if not raw:
             print("Descriptor cannot be blank.")
             continue
         try:
-            public_info, public_body, pattern, occurrences = (
-                validate_public_descriptor(
-                    bitcoin_cli, raw, origin, account_xpub
-                )
-            )
+            import_public_descriptor(bitcoin_cli, wallet, raw)
             break
         except (DescriptorError, RpcError) as exc:
             print(f"Descriptor rejected: {exc}")
-            print(
-                "Try again, or press Ctrl-C to stop without importing a descriptor."
-            )
-            print()
-
-    xprv = derive_private_account(
-        bitcoin_cli, wallet, root_xpub, path, origin, account_xpub
-    )
-    try:
-        active = import_signing_descriptor(
-            bitcoin_cli,
-            wallet,
-            public_info,
-            public_body,
-            pattern,
-            occurrences,
-            account_xpub,
-            xprv,
-        )
-    finally:
-        # Python strings cannot be reliably zeroized. Keep the private value's
-        # lifetime as short as practical and never print, persist, or pass it in argv.
-        del xprv
-
-    verify_signer(
-        bitcoin_cli,
-        wallet,
-        account_xpub,
-        public_info["descriptor"],
-        active,
-    )
-
-    print()
-    print("Signer ready.")
-    print(f"Wallet: {wallet}")
-    print(f"Signer path: {path}")
-    print("Bitcoin Core accepted the descriptor and reports this account key as private.")
-    print(
-        "Back up the wallet before funding the policy, "
-        "then verify the policy and test with disposable funds."
-    )
+            print("Try again, or press Ctrl-C and run sh tails.sh import later.")
 
 
 if __name__ == "__main__":
@@ -443,3 +453,6 @@ if __name__ == "__main__":
         main()
     except RpcError as exc:
         fail(str(exc))
+    except (KeyboardInterrupt, EOFError):
+        print("\nStopped. Keep the wallet output; rerun the appropriate step when ready.", file=sys.stderr)
+        raise SystemExit(1)

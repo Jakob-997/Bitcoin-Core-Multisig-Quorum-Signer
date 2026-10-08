@@ -1,70 +1,29 @@
-POST-CREATION GUIDE
+POST-STEP GUIDE
 
-Your Bitcoin Core descriptor signer has been created.
+Wallets are in descriptor-signer-wallets/ inside this project.
 
-Persistent wallet data is in:
+AFTER STEP 1
 
-descriptor-signer-wallets/
+The account private key is stored in Core's wallet. Add the exported public [origin]xpub to the coordinator's policy. Step 2 can be performed later using sh tails.sh import and the selected wallet.
 
-inside this project folder.
+Back up the wallet and preserve wallet output on secure persistent/offline media before shutting down Tails. The ordinary temporary home does not survive shutdown. A private-key wallet backup is sensitive; anyone obtaining it may be able to sign when a policy path involving that key is available. No separate session/checkpoint file is required.
 
-1. BACK UP THE SIGNER
+AFTER STEP 2
 
-Create and verify an offline backup before funding the wallet policy.
+The complete supplied public descriptor has been imported and verified. New branches are inactive for address generation but available for signing; use the coordinator to generate receive/change addresses. Core's default range applies to new ranged imports. Existing exact branches retain their prior state.
 
-The backup contains private signing material. Anyone who obtains it may be able to sign whenever a spending path involving this signer is available.
+Independently verify fingerprints, origins, cosigners, thresholds, timelocks, recovery paths, Taproot scripts, and the first receive/change addresses. Core import is not proof of policy intent or enough signing keys to spend.
 
-2. VERIFY THE PUBLIC POLICY
+TEST WITH DISPOSABLE FUNDS
 
-On the coordinator side, independently verify the exact public descriptor you intended.
+Create a PSBT exercising a path involving this signer. Inspect destination, amount, and fee on the offline signer; sign with Core. Complete required signatures and verify the transaction before broadcast. Test timelocked/recovery paths separately on regtest where practical.
 
-Depending on the policy, check:
+VERIFY BACKUP RESTORE
 
-- signer fingerprints and account origins;
-- thresholds;
-- receive/change derivation;
-- Miniscript branches;
-- relative or absolute timelocks;
-- Taproot script paths;
-- recovery paths;
-- the first several receive/change addresses.
+Restore on an offline system. Confirm the wallet loads, the same public descriptor and addresses are present, and the local signer signs an applicable disposable PSBT. After testing, shut down the system and store backups with enough separated independent signer material for the policy.
 
-Do not treat successful Core import as proof that the policy is correct.
+INTERRUPTED STEP 2
 
-3. TEST WITH DISPOSABLE FUNDS
+Keep the wallet output. Rerun sh tails.sh import with the same wallet and descriptor. Completed branches are verified and skipped; missing branches are imported. Do not fund an incomplete policy.
 
-Create a PSBT that exercises a path involving this signer.
-
-On the offline signer:
-- inspect destination;
-- inspect amount;
-- inspect fee;
-- sign with Bitcoin Core.
-
-Complete the policy's required signatures and verify the transaction before broadcast.
-
-For timelocked/recovery policies, test those paths separately on regtest/test infrastructure where practical.
-
-4. VERIFY RESTORE
-
-Restore the signer backup on an offline system.
-
-Confirm:
-- the wallet loads;
-- the same public descriptor is present;
-- expected addresses match;
-- the local signer can sign a disposable PSBT for an applicable path.
-
-5. STORE
-
-After testing:
-- shut down the offline system;
-- remove the Tails USB;
-- store backups according to your threat model;
-- keep enough independent signer material separated to preserve the wallet policy.
-
-ONLINE COORDINATOR IS UNTRUSTED
-
-The coordinator may be compromised.
-
-Verify transaction details and the intended wallet policy independently before signing.
+The current temporary Core extraction is removed after successful step verification and clean shutdown. The project, original archive, and wallet output remain available. The coordinator may be compromised: independently verify policy and transaction intent before signing.

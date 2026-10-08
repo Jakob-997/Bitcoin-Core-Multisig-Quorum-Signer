@@ -6,6 +6,26 @@ umask 077
 
 project_slug="core-descriptor-signer"
 output_dir_name="descriptor-signer-wallets"
+if [ "$#" -eq 0 ]; then
+    printf '(c)reate - Create a signer wallet and export its public key\n'
+    printf '(i)mport - Select an existing wallet and import a public descriptor\n'
+    while :; do
+        printf '\nType create (c) or import (i): '
+        IFS= read -r step || exit 1
+        case "$step" in
+            create|c|C) step=create; break ;;
+            import|i|I) step=import; break ;;
+            *) echo "Please type create (c) or import (i)." ;;
+        esac
+    done
+else
+    step=$1
+fi
+case "$step" in
+    create|c|C) [ "$#" -le 1 ] || exit 1; step=create ;;
+    import|i|I) [ "$#" -le 1 ] || exit 1; step=import ;;
+    *) echo "Usage: sh tails.sh [create|c|import|i]" >&2; exit 1 ;;
+esac
 
 zenity --text-info \
     --title="Pre-Creation Guide" \
@@ -64,35 +84,43 @@ output_dir="$here/$output_dir_name"
 original_home=$HOME
 export HOME="$state"
 cd "$here"
+core_pid=""
 
 stop_core() {
-    "$bitcoin_cli" stop >/dev/null 2>&1 || true
-    pkill -TERM -x bitcoind >/dev/null 2>&1 || true
-    pkill -TERM -x bitcoin-qt >/dev/null 2>&1 || true
-
-    while pgrep -x bitcoind >/dev/null 2>&1 || pgrep -x bitcoin-qt >/dev/null 2>&1; do
-        sleep 1
-    done
+    if [ -n "$core_pid" ]; then
+        kill -TERM "$core_pid" 2>/dev/null || true
+        wait "$core_pid" || return 1
+        core_pid=""
+    fi
 }
 
 cleanup() {
-    stop_core
-    rm -rf "$state"
+    # Keep runtime and extraction if Core did not shut down cleanly.
+    stop_core && rm -rf -- "$state"
 }
 
 trap cleanup EXIT
 
-stop_core
+# Wallet names, not a separate session file, identify the two independent steps.
+if [ "$step" = "import" ]; then
+    if [ ! -d "$output_dir" ]; then
+        echo "No wallet directory found. Run sh tails.sh create first." >&2
+        exit 1
+    fi
+else
+    mkdir -p "$output_dir"
+fi
 
-# Fail closed rather than reuse an old signer output.
-mkdir "$output_dir"
-
-"$bitcoind_bin" -daemonwait -networkactive=0 -listen=0 -walletdir="$output_dir"
+"$bitcoind_bin" -daemon=0 -printtoconsole=0 -networkactive=0 -listen=0 -walletdir="$output_dir" &
+core_pid=$!
+"$bitcoin_cli" -rpcwait -rpcwaittimeout=60 getblockchaininfo >/dev/null
 printf '\n'
 
-python3 "$here/generator.py" "$bitcoin_cli" "$qr_bin"
+python3 "$here/generator.py" "$bitcoin_cli" "$qr_bin" "$step"
 
 cleanup
+# Only a verified signer and clean Core shutdown permit extraction removal.
+rm -rf -- "$core_dir"
 trap - EXIT HUP INT TERM
 export HOME="$original_home"
 
@@ -104,4 +132,4 @@ setsid -f zenity --text-info \
     </dev/null >/dev/null 2>&1
 
 echo "Please read POST-CREATION-GUIDE.txt."
-printf '\nDescriptor signer creation complete. You may now close this window.\n'
+printf '\nStep complete. You may now close this window.\n'

@@ -1,86 +1,46 @@
-PRE-CREATION GUIDE
+PRE-CREATION / IMPORT GUIDE
 
-Before creating this Bitcoin Core descriptor signer, confirm:
-
-[ ] I have verified the Tails ISO.
-[ ] I am using Bitcoin Core v32.0rc2 and have independently verified the release/signing fingerprints I trust.
-[ ] The project folder is beside bitcoin-32.0rc2-x86_64-linux-gnu.tar.gz.
-[ ] I have physically air-gapped this computer where practical.
-[ ] I understand this creates a Bitcoin Core wallet containing private signing material.
-[ ] I have secure backup media ready.
-[ ] I know whether this Core signer should export BIP87 or BIP48 native-P2WSH.
-[ ] I have a coordinator/wallet application ready to build the final PUBLIC descriptor.
-[ ] I will independently verify the final policy, addresses, thresholds, timelocks, and recovery paths before funding.
-[ ] I have disposable funds or a test network available for an end-to-end signing test.
+[ ] Verify the Tails ISO and independently verify Bitcoin Core v32.0rc2.
+[ ] Place this project beside bitcoin-32.0rc2-x86_64-linux-gnu.tar.gz.
+[ ] Physically air-gap the computer where practical.
+[ ] Prepare secure persistent/offline wallet storage and backup media.
+[ ] Independently verify the intended policy, fingerprints, origins, addresses, thresholds, timelocks, and recovery paths.
+[ ] Have a test network or disposable funds for signing and restore tests.
 
 VERIFY SOFTWARE
 
-Official Tails verification:
 https://tails.net/install/download/
-
-Official Bitcoin Core verification:
 https://bitcoincore.org/en/download/#verify-your-download
 
-Pinned Bitcoin Core archive:
-
-bitcoin-32.0rc2-x86_64-linux-gnu.tar.gz
-
-Pinned SHA-256:
-
+Pinned archive SHA-256:
 0255103718033e6aee15fa944717fc277e047b845bff1e7408af0ea732d8d0c1
 
-The launcher freshly extracts this archive and invokes only those absolute Core binary paths.
+The launcher checks this exact archive, freshly extracts it, disables NetworkManager networking, and starts Core with -networkactive=0 -listen=0. These are defense in depth, not a physical air gap. Close conflicting Core instances first.
 
-AIR GAP
+STEP 1 -- CREATE WALLET AND EXPORT XPUB
 
-tails.sh disables NetworkManager networking and requires it to report disabled.
+Run sh tails.sh and type create at the prompt. Choose a NEW wallet name and account:
+BIP87: m/87h/coin_typeh/0h
+BIP48 native-P2WSH: m/48h/coin_typeh/0h/2h
 
-Core also starts with:
+Core creates a root, derives the account, and stores the private account as unused() in the wallet. The public [origin]xpub is displayed as text and QR. Compare scanned QR text with the displayed text. Step 1 finishes here.
 
--networkactive=0 -listen=0
+Back up the wallet. Preserve the complete descriptor-signer-wallets/ directory on secure persistent/offline media BEFORE shutting down Tails; temporary Tails home storage does not survive shutdown. Add the public key to your coordinator's policy whenever ready.
 
-These are defense in depth, not substitutes for physical isolation.
+STEP 2 -- SELECT WALLET AND IMPORT PUBLIC DESCRIPTOR
 
-LOCAL ACCOUNT CHOICE
+Later, run sh tails.sh and type import at the prompt. Select the existing wallet from the numbered list and paste the complete PUBLIC descriptor. Core must report that the selected wallet privately owns an exact descriptor xpub in every branch. An unrelated or watch-only wallet is rejected. No replacement key or new wallet is created during import.
 
-The generator offers:
+The helper substitutes a matching private key in memory, checks that every public branch is unchanged, imports missing branches, and verifies the result. Newly imported descriptors are inactive for signing; generate addresses on the coordinator. Core's default range applies to new ranged imports.
 
-BIP87:
-    m/87h/coin_typeh/0h
+If interrupted, preserve the wallet output and rerun sh tails.sh import with the SAME wallet and descriptor. Already imported branches are verified and skipped. Do not fund a partial import before completion.
 
-BIP48 native-P2WSH:
-    m/48h/coin_typeh/0h/2h
-
-This choice controls only the local Core signer.
-
-For example, a Liana policy may use BIP48 for an immediate-spend key and BIP87 for a recovery key. Choose the role you want this Core signer to occupy.
-
-WHAT WILL HAPPEN
-
-1. Core creates a blank private-key-enabled descriptor wallet.
-2. Core generates a fresh root with addhdkey.
-3. Core derives the selected account.
-4. The public [fingerprint/path]xpub is displayed as text + QR.
-5. Add that public key to the wallet/coordinator policy.
-6. Export the complete PUBLIC descriptor.
-7. Paste that descriptor into the offline signer.
-8. Bitcoin Core parses and canonicalizes it.
-9. The helper requires this exact local [origin]xpub identity to appear.
-10. Core derives the matching account xprv internally.
-11. Only exact occurrences of this local identity are replaced with the xprv.
-12. Core must canonicalize the private form back to the identical public descriptor and multipath expansion.
-13. The descriptor is imported.
-14. Core must report the local account key as private/signable and attached to the expected descriptor.
+Each successful step removes its fresh Core extraction only after verification and clean shutdown. Failed/interrupted runs retain the extraction and wallet output; failed shutdown retains runtime state too. The project and archive remain available. There is no separate session file to preserve.
 
 IMPORTANT
 
-The helper deliberately does NOT decide whether the descriptor policy is safe or sensible.
+Wallet ownership does not prove the policy is correct or that one signer can spend every path. Core-valid policies can have wrong cosigners, thresholds, timelocks, or recovery branches. Verify the policy independently before funding.
 
-A Core-valid descriptor can still contain:
-- the wrong threshold;
-- the wrong cosigners;
-- the wrong timelock;
-- the wrong recovery branch;
-- an unintended Taproot/Miniscript policy.
+Optional shortcuts: sh tails.sh create and sh tails.sh import skip the prompt.
 
-Verify the policy independently before funding it.
+Expert shortcuts: the menu labels are (c)reate and (i)mport. Type c or C for create, or i or I for import. Full words still work. The same letters can be supplied as launcher arguments (for example, sh tails.sh c).
