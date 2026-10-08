@@ -20,7 +20,7 @@ Back up the wallet and keep `descriptor-signer-wallets/` on secure persistent/of
 
 Later, run `sh tails.sh` again and type `import`. You can also skip the prompt using `sh tails.sh create` or `sh tails.sh import`.
 
-Select an existing wallet from the list and paste the complete PUBLIC descriptor. Core must report that this wallet holds the private key for an exact descriptor xpub in every expanded branch. An unrelated or watch-only wallet is rejected. The helper substitutes that wallet-owned private key only in memory, proves that Core's canonical public policy is unchanged, imports the missing branches, and verifies the result.
+Select an existing wallet from the list. The import step displays its public account key again, including its origin, before asking you to paste the complete PUBLIC descriptor. Core must report that this wallet holds the private key for an exact descriptor xpub in every expanded branch. An unrelated or watch-only wallet is rejected. The helper substitutes that wallet-owned private key only in memory, proves that Core's canonical public policy is unchanged, imports the missing branches, and verifies the result.
 
 The steps depend on Core's wallet files, not a separate session/checkpoint file. A restored private descriptor wallet with a matching stored HD account key can also be selected. Step 2 never creates a wallet or generates a replacement key. A key represented only as a derived fixed hex public key, or an account xpub not stored in the selected wallet, is outside this helper's ownership lookup.
 

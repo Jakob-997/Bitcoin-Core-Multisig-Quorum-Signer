@@ -19,6 +19,32 @@ class BoundaryTests(unittest.TestCase):
         with patch.object(g, "rpc", return_value=info):
             return g.validate_public_descriptor("cli", "input", self.origin, self.xpub)
 
+    def test_import_redisplays_selected_account_before_descriptor_prompt(self):
+        public = self.origin + self.xpub
+        keys = [
+            {"xpub": "tpubROOT", "has_private": True, "descriptors": [{"desc": "unused(tpubROOT)#sum"}]},
+            {"xpub": self.xpub, "has_private": True, "xprv": "SECRET", "descriptors": [
+                {"desc": f"unused({public})#sum"}, {"desc": f"wpkh({public}/0/*)#sum"}]},
+            {"xpub": "tpubOTHER", "has_private": False, "descriptors": [{"desc": "unused(tpubOTHER)#sum"}]},
+        ]
+        output = io.StringIO()
+        def input_descriptor(prompt):
+            self.assertEqual(prompt, "Public descriptor: ")
+            self.assertIn(public, output.getvalue())
+            self.assertNotIn("tpubROOT", output.getvalue())
+            self.assertNotIn("tpubOTHER", output.getvalue())
+            self.assertNotIn("SECRET", output.getvalue())
+            self.assertEqual(output.getvalue().count(public), 1)
+            return f"wpkh({public}/0/*)"
+        with patch.object(sys, "argv", ["generator.py", "cli", "qr", "import"]), \
+                patch.object(g, "core_info", return_value=("32", "regtest", 1)), \
+                patch.object(g, "select_wallet", return_value="selected-wallet"), \
+                patch.object(g, "rpc", return_value=keys) as rpc, \
+                patch.object(g, "import_public_descriptor"), \
+                patch("builtins.input", side_effect=input_descriptor), contextlib.redirect_stdout(output):
+            g.main()
+        rpc.assert_called_once_with("cli", "gethdkeys", wallet="selected-wallet")
+
     def test_rejects_private_missing_and_ambiguous_keys(self):
         key = self.origin + self.xpub
         for info in [

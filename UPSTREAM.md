@@ -34,7 +34,7 @@ The three-layer architecture remains:
 ## Current executable identities
 
 ```text
-generator.py: 26c6dbc0034a770f17f47a3ef359c8253c649973
+generator.py: 4d490875b15460edbad4f4d833c351227848af20
 tails.sh:     08d29a5ca29b7d3b48f43aaa1a21bde19e367d4e
 ```
 

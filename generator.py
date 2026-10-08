@@ -425,6 +425,24 @@ def import_public_descriptor(bitcoin_cli, wallet, raw):
     print("Signer ready. Core reports the imported policy and its wallet-owned private key.")
 
 
+def show_wallet_public_keys(bitcoin_cli, wallet):
+    keys = rpc(bitcoin_cli, "gethdkeys", wallet=wallet)
+    expressions = {
+        match.group(0)
+        for key in keys if key.get("has_private") is True
+        for desc in key.get("descriptors", [])
+        for match in local_key_pattern(None, key["xpub"]).finditer(descriptor_body(desc["desc"]))
+    }
+    # Prefer the exported accounts with origins over the unused master root.
+    accounts = {key for key in expressions if key.startswith("[")} or expressions
+    if not accounts:
+        fail("The selected wallet has no privately owned HD signer keys.")
+    print(f"\nPublic signer key(s) for wallet {wallet}:")
+    for key in sorted(accounts):
+        print(key)
+    print("Add the matching public key to your coordinator's descriptor.\n")
+
+
 def main():
     if len(sys.argv) != 4 or sys.argv[3] not in {"create", "import"}:
         fail("Run sh tails.sh create or sh tails.sh import.")
@@ -435,6 +453,7 @@ def main():
         create_signer(bitcoin_cli, qr_bin, coin_type)
         return
     wallet = select_wallet(bitcoin_cli)
+    show_wallet_public_keys(bitcoin_cli, wallet)
     while True:
         raw = input("Public descriptor: ").strip()
         if not raw:

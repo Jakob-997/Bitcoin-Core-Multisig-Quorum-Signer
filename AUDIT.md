@@ -3,13 +3,13 @@
 Review date: 2026-10-07
 Base project: `dab58d8676a5fa29f159eef5f384b400f3030e75`
 Feature Overlay reviewed: `5011c687c4c10ce9f70bef4dfbac9dfe89825406`
-Generator blob: `26c6dbc0034a770f17f47a3ef359c8253c649973`
+Generator blob: `4d490875b15460edbad4f4d833c351227848af20`
 Launcher blob: `08d29a5ca29b7d3b48f43aaa1a21bde19e367d4e`
 Core version: v32.0rc2
 Core source: `bc795e60dbb2c6e9c9556949731912429290626a`
 Linux archive SHA-256: `0255103718033e6aee15fa944717fc277e047b845bff1e7408af0ea732d8d0c1`
 
-Changes remain local and uncommitted. This is AI-assisted source/security review, not an independent professional audit. Method: [AUDITING.md](AUDITING.md).
+This is AI-assisted source/security review, not an independent professional audit. Method: [AUDITING.md](AUDITING.md).
 
 ## Current implementation
 
@@ -47,3 +47,7 @@ Not executed: full Tails GUI/network-isolation workflow, sudden power loss/SIGKI
 Ownership lookup requires an exact HD xpub stored privately in the selected wallet. Arbitrary fixed hex public keys and unstored descendants are not discovered. Ownership of one key does not prove enough signatures to spend or intended policy correctness. Thresholds, origins, cosigners, timelocks, recovery paths and transaction details remain independent human/coordinator checks.
 
 Wallet output must survive Tails shutdown on secure persistent/offline media. No session file is required. An interrupted step 1 before account storage/export is not claimed complete and is never silently overwritten. Lost private material cannot be recreated. Wallet encryption and physical/firmware compromise are outside this implementation. Retest any Core pin change and record new executable hashes.
+
+## Import public-key display follow-up
+
+The selected wallet's public account key and origin are displayed before the descriptor prompt. The display uses public gethdkeys only, deduplicates repeated account keys, and omits the unused master root when account origins are available. A regression test verifies prompt order, selected-wallet lookup, and exclusion of private and watch-only keys. Windows suite: ten tests passed, four environment-dependent tests skipped. Earlier actual-Core evidence above predates this display-only change.
