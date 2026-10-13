@@ -1,495 +1,196 @@
 #!/usr/bin/env python3
+"""Create a Core signer wallet, or import its public descriptor in a later run."""
 import json
 import re
 import subprocess
 import sys
-
-TEST_CHAINS = {"test", "testnet4", "signet", "regtest"}
-ACCOUNT = 0
-HARDENED = r"(?:h|H|')"
-
-BIP87_ORIGIN_RE = re.compile(
-    rf"^\[([0-9a-fA-F]{{8}})/87{HARDENED}/([01]){HARDENED}/0{HARDENED}\]$"
-)
-BIP48_ORIGIN_RE = re.compile(
-    rf"^\[([0-9a-fA-F]{{8}})/48{HARDENED}/([01]){HARDENED}/0{HARDENED}/2{HARDENED}\]$"
-)
 
 
 class RpcError(Exception):
     pass
 
 
-class DescriptorError(Exception):
-    pass
-
-
-def fail(message):
-    print(f"Error: {message}", file=sys.stderr)
-    raise SystemExit(1)
-
-
-def rpc(bitcoin_cli, method, *args, wallet=None, sensitive=False):
-    cmd = [bitcoin_cli]
-    if wallet is not None:
-        cmd.append(f"-rpcwallet={wallet}")
-    cmd.extend(["-stdin", method])
-    stdin = "".join(f"{arg}\n" for arg in args)
-
+def rpc(cli, method, *args, wallet=None, sensitive=False):
+    command = [cli] + ([f"-rpcwallet={wallet}"] if wallet is not None else [])
     try:
         result = subprocess.run(
-            cmd,
-            input=stdin,
-            text=True,
-            capture_output=True,
-            check=False,
+            command + ["-stdin", method],
+            input="".join(f"{arg}\n" for arg in args),
+            text=True, capture_output=True, check=False,
         )
-    except FileNotFoundError:
-        raise RpcError("bitcoin-cli was not found.")
-
-    if result.returncode != 0:
-        if sensitive:
-            raise RpcError(
-                f"{method} failed. Sensitive descriptor material was not printed."
-            )
-        message = result.stderr.strip() or result.stdout.strip() or f"{method} failed."
-        raise RpcError(message)
-
+    except OSError:
+        raise RpcError("Cannot run bitcoin-cli.") from None
+    if result.returncode:
+        message = f"{method} failed." if sensitive else result.stderr.strip()
+        raise RpcError(message or f"{method} failed.")
     try:
         return json.loads(result.stdout)
     except json.JSONDecodeError:
-        if sensitive:
-            raise RpcError(
-                f"{method} returned an unexpected response. Sensitive material was not printed."
-            )
-        raise RpcError(f"Unexpected non-JSON response from {method}.")
+        raise RpcError(f"{method} returned an unexpected response.") from None
 
 
-def core_info(bitcoin_cli):
-    network = rpc(bitcoin_cli, "getnetworkinfo")
-    version = network.get("version")
-    if not isinstance(version, int) or version // 10000 != 32:
-        fail(
-            "This utility requires Bitcoin Core 32.x. "
-            f"Detected: {network.get('subversion', version)}"
-        )
-
-    chain = rpc(bitcoin_cli, "getblockchaininfo").get("chain")
-    if chain == "main":
-        return network.get("subversion", str(version)), chain, 0
-    if chain in TEST_CHAINS:
-        return network.get("subversion", str(version)), chain, 1
-    fail(f"Unsupported Bitcoin network: {chain}")
+def key_pattern(xpub):
+    # Core parses the policy; this only locates an exact extended key token.
+    return re.compile(r"(?<=[(,])(?:\[[^\[\]]*\])?" + re.escape(xpub) + r"(?=[/,)}])")
 
 
-def get_account_type():
-    print("Choose the Core signer account to export:")
-    print("  1. BIP87 multisig account      m/87h/coin_typeh/0h")
-    print("  2. BIP48 native-P2WSH account m/48h/coin_typeh/0h/2h")
-    print()
-    choice = input("Signer account type [1]: ").strip() or "1"
-    if choice == "1":
-        return "bip87"
-    if choice == "2":
-        return "bip48"
-    fail("Choose 1 for BIP87 or 2 for BIP48 native-P2WSH.")
+def verify_signer(cli, wallet, xpub, states):
+    keys = rpc(cli, "gethdkeys", '{"active_only":false}', wallet=wallet)
+    owned = [key for key in keys if key["xpub"] == xpub and key.get("has_private")]
+    if len(owned) != 1:
+        raise RpcError("Core does not report the expected private signer key.")
+    stored = {item["desc"]: item["active"] for item in owned[0]["descriptors"]}
+    if any(desc not in stored or stored[desc] != active for desc, active in states.items()):
+        raise RpcError("Core did not store the expected signing descriptors.")
 
 
-def get_wallet_name():
-    name = input("Signer wallet name [core-descriptor-signer]: ").strip()
-    name = name or "core-descriptor-signer"
-    if not re.fullmatch(r"[A-Za-z0-9._-]{1,64}", name) or name in {".", ".."}:
-        fail("Use a simple wallet name containing only letters, numbers, '.', '_', or '-'.")
-    return name
+def import_signing_descriptor(cli, wallet, public, private_body, *, active=False,
+                              internal=False, previous=None):
+    info = rpc(cli, "getdescriptorinfo", private_body, sensitive=True)
+    if not info.get("hasprivatekeys") or info["descriptor"] != public:
+        raise RpcError("Signing key substitution changed the public descriptor.")
+    entry = dict(desc=private_body + "#" + info["checksum"],
+                 timestamp="now", active=active, internal=internal)
+    # Preserve an existing address cursor when repairing an inactive import.
+    for field in ("timestamp", "range", "next_index"):
+        if previous and field in previous:
+            entry[field] = previous[field]
+    result = rpc(cli, "importdescriptors", json.dumps([entry]),
+                 wallet=wallet, sensitive=True)
+    if len(result) != 1 or not result[0].get("success"):
+        raise RpcError("Descriptor import failed. Private material was not printed.")
 
 
-def create_blank_wallet(bitcoin_cli, wallet):
-    created = rpc(bitcoin_cli, "createwallet", wallet, "false", "true")
-    if not isinstance(created, dict) or created.get("name") != wallet:
-        fail("Unexpected response from createwallet.")
-
-    info = rpc(bitcoin_cli, "getwalletinfo", wallet=wallet)
-    if not (
-        info.get("descriptors")
-        and info.get("private_keys_enabled")
-        and info.get("blank")
-    ):
-        fail("Bitcoin Core did not create the expected blank private-key descriptor wallet.")
-
-
-def add_root_and_derive_public(bitcoin_cli, wallet, coin_type, account_type):
-    added = rpc(bitcoin_cli, "addhdkey", wallet=wallet)
-    root_xpub = added.get("xpub") if isinstance(added, dict) else None
-    if not isinstance(root_xpub, str) or not root_xpub:
-        fail("Unexpected response from addhdkey.")
-
-    if account_type == "bip87":
-        path = f"m/87h/{coin_type}h/{ACCOUNT}h"
-        origin_re = BIP87_ORIGIN_RE
-        label = "BIP87"
-    elif account_type == "bip48":
-        path = f"m/48h/{coin_type}h/{ACCOUNT}h/2h"
-        origin_re = BIP48_ORIGIN_RE
-        label = "BIP48 native-P2WSH"
-    else:
-        fail("Internal error: unsupported account type.")
-
-    options = json.dumps(
-        {"hdkey": root_xpub, "private": False},
-        separators=(",", ":"),
-    )
-    derived = rpc(bitcoin_cli, "derivehdkey", path, options, wallet=wallet)
-
-    if not isinstance(derived, dict) or "xprv" in derived:
-        fail("Unexpected response from derivehdkey.")
-
-    origin = derived.get("origin")
-    account_xpub = derived.get("xpub")
-    if not isinstance(origin, str) or not isinstance(account_xpub, str):
-        fail("derivehdkey did not return the expected public key data.")
-
-    match = origin_re.fullmatch(origin)
-    if not match or int(match.group(2)) != coin_type:
-        fail(f"Bitcoin Core returned an unexpected {label} key origin.")
-
-    expected_prefix = "xpub" if coin_type == 0 else "tpub"
-    if not account_xpub.startswith(expected_prefix):
-        fail("Bitcoin Core returned an extended public key for the wrong network.")
-
-    return root_xpub, path, origin, account_xpub, label
+def create_signer(cli, qr_bin, coin_type):
+    wallet = input("Wallet name [core-descriptor-signer]: ").strip() or "core-descriptor-signer"
+    if not re.fullmatch(r"[A-Za-z0-9._-]{1,64}", wallet) or wallet in {".", ".."}:
+        raise RpcError("Use a wallet name with letters, numbers, dots, underscores or hyphens.")
+    choice = input("Account: 1 = BIP87, 2 = BIP48 native P2WSH [1]: ").strip() or "1"
+    paths = {"1": f"m/87h/{coin_type}h/0h", "2": f"m/48h/{coin_type}h/0h/2h"}
+    if choice not in paths:
+        raise RpcError("Choose account 1 or 2.")
+    rpc(cli, "createwallet", wallet, "false", "true")
+    root = rpc(cli, "addhdkey", wallet=wallet)["xpub"]
+    account = rpc(cli, "derivehdkey", paths[choice],
+                  json.dumps({"hdkey": root, "private": True}),
+                  wallet=wallet, sensitive=True)
+    public_key = account["origin"] + account["xpub"]
+    public = rpc(cli, "getdescriptorinfo", f"unused({public_key})")["descriptor"]
+    # Core stores the account so step 2 needs only the wallet, not a session file.
+    import_signing_descriptor(cli, wallet, public,
+                              f"unused({account['origin']}{account['xprv']})")
+    verify_signer(cli, wallet, account["xpub"], {public: False})
+    del account
+    print(f"\nWallet created: {wallet}\nPublic signer key:\n{public_key}")
+    subprocess.run([qr_bin, "--ascii", public_key], check=True)
+    print("Back up the wallet. Run sh tails.sh import whenever your descriptor is ready.")
 
 
-def show_qr(qr_bin, text):
-    print()
-    print("QR code:")
-    result = subprocess.run([qr_bin, "--ascii", text], check=False)
-    if result.returncode != 0:
-        fail("The qr command failed.")
-
-
-def descriptor_body(raw):
-    if raw.count("#") > 1:
-        raise DescriptorError("Descriptor contains more than one checksum separator.")
-    return raw.split("#", 1)[0]
-
-
-def local_key_pattern(origin, account_xpub):
-    # getdescriptorinfo canonicalizes descriptor syntax. Match only this signer's
-    # exact origin+xpub identity and require a descriptor-key boundary after it.
-    if origin is None:
-        # Core already parsed these key expressions. Preserve whichever valid
-        # origin the coordinator supplied, and bind ownership to the exact xpub.
-        return re.compile(r"(?<=[(,])(?:\[[^\[\]]*\])?" + re.escape(account_xpub) + r"(?=[/,)}])")
-    identity = re.escape(origin + account_xpub)
-    return re.compile(identity + r"(?=[/,)}])")
-
-
-def validate_public_descriptor(bitcoin_cli, raw, origin, account_xpub):
-    # Even a rejected paste may contain private keys; never echo Core's error.
-    info = rpc(bitcoin_cli, "getdescriptorinfo", raw, sensitive=True)
-    if not isinstance(info, dict):
-        fail("Unexpected response from getdescriptorinfo.")
-
-    if info.get("hasprivatekeys"):
-        raise DescriptorError(
-            "Paste a public descriptor only; private keys are not accepted."
-        )
-
-    canonical = info.get("multipath_expansion", [info.get("descriptor")])
-    if not isinstance(canonical, list) or not canonical or not all(
-        isinstance(desc, str) and desc for desc in canonical
-    ):
-        fail("Bitcoin Core did not return a canonical public descriptor.")
-
-    pattern = local_key_pattern(origin, account_xpub)
-    bodies = [descriptor_body(desc) for desc in canonical]
-    occurrences = [len(list(pattern.finditer(body))) for body in bodies]
-
-    if not all(occurrences):
-        raise DescriptorError(
-            "The descriptor does not contain this Core signer's exact account key."
-        )
-
-    # If the xpub appears anywhere else, do not guess whether it is the same signer
-    # under a different or malformed origin.
-    if any(body.count(account_xpub) != count for body, count in zip(bodies, occurrences)):
-        raise DescriptorError(
-            "This signer's account xpub appears with an unexpected or ambiguous origin."
-        )
-
-    return canonical, bodies, pattern, occurrences
-
-
-def derive_private_account(
-    bitcoin_cli, wallet, root_xpub, path, origin, account_xpub
-):
-    options = json.dumps(
-        {"hdkey": root_xpub, "private": True},
-        separators=(",", ":"),
-    )
-    derived = rpc(
-        bitcoin_cli,
-        "derivehdkey",
-        path,
-        options,
-        wallet=wallet,
-        sensitive=True,
-    )
-    if not isinstance(derived, dict):
-        fail("Unexpected response from private derivehdkey.")
-
-    if derived.get("origin") != origin or derived.get("xpub") != account_xpub:
-        fail("Private derivation did not match the previously exported signer key.")
-
-    xprv = derived.get("xprv")
-    if not isinstance(xprv, str) or not xprv:
-        fail("Bitcoin Core did not return the expected private account key.")
-    return xprv
-
-
-def import_signing_descriptor(
-    bitcoin_cli,
-    wallet,
-    public_descriptor,
-    public_body,
-    pattern,
-    expected_occurrences,
-    account_xpub,
-    xprv,
-    internal=False,
-    active=False,
-    previous=None,
-):
-    def replace_key(match):
-        return match.group(0).replace(account_xpub, xprv, 1)
-
-    private_body, replaced = pattern.subn(replace_key, public_body)
-    if replaced != expected_occurrences or replaced < 1:
-        fail("Internal error while substituting the local signing key.")
-
-    if account_xpub in private_body:
-        fail("Unexpected local account xpub remained after private substitution.")
-
-    private_info = rpc(
-        bitcoin_cli,
-        "getdescriptorinfo",
-        private_body,
-        sensitive=True,
-    )
-    if not isinstance(private_info, dict) or not private_info.get("hasprivatekeys"):
-        fail("Bitcoin Core did not recognize the private signing descriptor.")
-
-    if private_info.get("descriptor") != public_descriptor:
-        fail("Private-key substitution changed the public descriptor.")
-    if private_info.get("multipath_expansion"):
-        fail("Private-key substitution introduced a multipath expansion.")
-
-    checksum = private_info.get("checksum")
-    if not isinstance(checksum, str) or not checksum:
-        fail("Bitcoin Core did not return a descriptor checksum.")
-
-    private_descriptor = f"{private_body}#{checksum}"
-
-    entry = {"desc": private_descriptor, "active": active, "internal": internal, "timestamp": "now"}
-    if previous:
-        for field in ("timestamp", "range", "next_index"):
-            if field in previous:
-                entry[field] = previous[field]
-    request = json.dumps(
-        [entry],
-        separators=(",", ":"),
-    )
-    result = rpc(
-        bitcoin_cli,
-        "importdescriptors",
-        request,
-        wallet=wallet,
-        sensitive=True,
-    )
-
-    if (
-        not isinstance(result, list)
-        or len(result) != 1
-        or not isinstance(result[0], dict)
-    ):
-        fail("Unexpected response from importdescriptors.")
-    if not result[0].get("success"):
-        code = result[0].get("error", {}).get("code")
-        suffix = f" (code {code})" if code is not None else ""
-        fail(
-            f"importdescriptors failed{suffix}. "
-            "Sensitive descriptor material was not printed."
-        )
-
-
-def verify_signer(bitcoin_cli, wallet, account_xpub, public_descriptors, active_states=None):
-    options = json.dumps({"active_only": False}, separators=(",", ":"))
-    keys = rpc(bitcoin_cli, "gethdkeys", options, wallet=wallet)
-    if not isinstance(keys, list):
-        fail("Unexpected response from gethdkeys.")
-
-    own = [item for item in keys if item.get("xpub") == account_xpub]
-    if len(own) != 1 or own[0].get("has_private") is not True:
-        fail("Bitcoin Core does not report this account xpub as signable.")
-
-    descriptors = own[0].get("descriptors")
-    if not isinstance(descriptors, list):
-        fail("Bitcoin Core did not report descriptors for the local account key.")
-
-    for public_descriptor in public_descriptors:
-        matching = [
-            item for item in descriptors
-            if isinstance(item, dict) and item.get("desc") == public_descriptor
-        ]
-        expected_active = active_states.get(public_descriptor, False) if active_states else False
-        if len(matching) != 1 or matching[0].get("active") is not expected_active:
-            fail("Bitcoin Core did not report the expected signing descriptor and active state.")
-
-
-def create_signer(bitcoin_cli, qr_bin, coin_type):
-    account_type = get_account_type()
-    wallet = get_wallet_name()
-    create_blank_wallet(bitcoin_cli, wallet)
-    root, path, origin, xpub, label = add_root_and_derive_public(
-        bitcoin_cli, wallet, coin_type, account_type
-    )
-    # Store the account in Core itself, ready for a later, independent import.
-    public = rpc(bitcoin_cli, "getdescriptorinfo", f"unused({origin}{xpub})")["descriptor"]
-    private = derive_private_account(bitcoin_cli, wallet, root, path, origin, xpub)
-    try:
-        import_signing_descriptor(
-            bitcoin_cli, wallet, public, descriptor_body(public),
-            local_key_pattern(origin, xpub), 1, xpub, private,
-        )
-    finally:
-        del private
-    verify_signer(bitcoin_cli, wallet, xpub, [public])
-    print(f"\nWallet created: {wallet}")
-    print(f"{label} signer key:")
-    print(origin + xpub)
-    show_qr(qr_bin, origin + xpub)
-    print("Step 1 complete. Back up this wallet before closing or shutting down.")
-    print("Later, run sh tails.sh import and select this wallet to import your public descriptor.")
-
-
-def select_wallet(bitcoin_cli):
-    wallets = rpc(bitcoin_cli, "listwalletdir")["wallets"]
+def select_wallet(cli):
+    wallets = rpc(cli, "listwalletdir")["wallets"]
     if not wallets:
-        fail("No wallets found. Run sh tails.sh create first or restore a wallet into the wallet directory.")
-    for index, item in enumerate(wallets, 1):
-        print(f"  {index}. {item['name']}")
+        raise RpcError("No wallets found. Run sh tails.sh create first.")
+    for number, item in enumerate(wallets, 1):
+        print(f"  {number}. {item['name']}")
     choice = input("Select wallet number: ").strip()
     if not choice.isdigit() or not 1 <= int(choice) <= len(wallets):
-        fail("Select a wallet number from the list.")
+        raise RpcError("Select a wallet number from the list.")
     wallet = wallets[int(choice) - 1]["name"]
-    if wallet not in rpc(bitcoin_cli, "listwallets"):
-        rpc(bitcoin_cli, "loadwallet", wallet)
-    info = rpc(bitcoin_cli, "getwalletinfo", wallet=wallet)
+    if wallet not in rpc(cli, "listwallets"):
+        rpc(cli, "loadwallet", wallet)
+    info = rpc(cli, "getwalletinfo", wallet=wallet)
     if not info.get("descriptors") or not info.get("private_keys_enabled"):
-        fail("Select a private-key descriptor wallet.")
+        raise RpcError("Select a private-key descriptor wallet.")
     return wallet
 
 
-def import_public_descriptor(bitcoin_cli, wallet, raw):
-    info = rpc(bitcoin_cli, "getdescriptorinfo", raw, sensitive=True)
-    if info.get("hasprivatekeys"):
-        raise DescriptorError("Paste a public descriptor only; private keys are not accepted.")
-    branches = info.get("multipath_expansion", [info.get("descriptor")])
-    keys = rpc(bitcoin_cli, "gethdkeys", wallet=wallet)
-    owned = [key["xpub"] for key in keys if key.get("has_private") is True and all(
-        isinstance(desc, str) and local_key_pattern(None, key["xpub"]).search(descriptor_body(desc))
-        for desc in branches
-    )]
-    if not owned:
-        raise DescriptorError("The selected wallet does not own a descriptor extended key in every branch.")
-    xpub = owned[0]
-    descs, bodies, pattern, counts = validate_public_descriptor(bitcoin_cli, raw, None, xpub)
-    print(f"Wallet {wallet} owns a matching descriptor key. Importing the public policy.")
-    # Core supports address generation for these ranged output types. Other
-    # valid policies remain importable for signing, including combo and bare pk.
-    address_capable = len(descs) <= 2 and info.get("isrange") is True and all(
-        body.startswith(("pkh(", "wpkh(", "sh(", "wsh(", "tr(")) for body in bodies
-    )
-    existing = {item["desc"]: item for item in rpc(
-        bitcoin_cli, "listdescriptors", wallet=wallet
-    )["descriptors"]}
-    active_states = {desc: address_capable or existing.get(desc, {}).get("active", False) for desc in descs}
-    pending = [desc for desc in descs if desc not in existing or (
-        active_states[desc] and not existing[desc]["active"]
-    )]
-    if pending:
-        # Core exports wallet-owned keys; no seed/session file or policy parser.
-        private_keys = rpc(bitcoin_cli, "gethdkeys", '{"private":true}', wallet=wallet, sensitive=True)
-        matches = []
-        try:
-            matches = [key for key in private_keys if key.get("xpub") == xpub and key.get("has_private") is True]
-            if len(matches) != 1 or not isinstance(matches[0].get("xprv"), str):
-                fail("Core did not return the selected wallet's matching private key.")
-            for index, (desc, body, count) in enumerate(zip(descs, bodies, counts)):
-                if desc in pending:
-                    import_signing_descriptor(
-                        bitcoin_cli, wallet, desc, body, pattern, count, xpub, matches[0]["xprv"],
-                        internal=existing.get(desc, {}).get("internal", len(descs) == 2 and index == 1),
-                        active=active_states[desc], previous=existing.get(desc),
-                    )
-        finally:
-            # Python strings cannot be reliably zeroized; do not persist/print them.
-            del private_keys, matches
-    verify_signer(bitcoin_cli, wallet, xpub, descs, active_states)
-    print("Signer ready. Core reports the imported policy and its wallet-owned private key.")
-    if address_capable:
-        print("Receive addresses are enabled in Core. Choose the imported policy's address type in Receive.")
-    else:
-        print("This policy is imported for signing. Generate its addresses with the coordinator.")
-
-
-def show_wallet_public_keys(bitcoin_cli, wallet):
-    keys = rpc(bitcoin_cli, "gethdkeys", wallet=wallet)
+def show_wallet_public_keys(cli, wallet):
+    keys = rpc(cli, "gethdkeys", wallet=wallet)
     expressions = {
         match.group(0)
-        for key in keys if key.get("has_private") is True
+        for key in keys if key.get("has_private")
         for desc in key.get("descriptors", [])
-        for match in local_key_pattern(None, key["xpub"]).finditer(descriptor_body(desc["desc"]))
+        for match in key_pattern(key["xpub"]).finditer(desc["desc"])
     }
-    # Prefer the exported accounts with origins over the unused master root.
     accounts = {key for key in expressions if key.startswith("[")} or expressions
-    if not accounts:
-        fail("The selected wallet has no privately owned HD signer keys.")
-    print(f"\nPublic signer key(s) for wallet {wallet}:")
-    for key in sorted(accounts):
-        print(key)
-    print("Add the matching public key to your coordinator's descriptor.\n")
+    print("\nPublic signer key(s):\n" + "\n".join(sorted(accounts)))
+
+
+def import_public_descriptor(cli, wallet, raw):
+    info = rpc(cli, "getdescriptorinfo", raw, sensitive=True)
+    if info.get("hasprivatekeys"):
+        raise RpcError("Paste a public descriptor only.")
+    branches = info.get("multipath_expansion") or [info["descriptor"]]
+    bodies = [desc.split("#", 1)[0] for desc in branches]
+    keys = rpc(cli, "gethdkeys", wallet=wallet)
+    owned = [key["xpub"] for key in keys if key.get("has_private") and all(
+        key_pattern(key["xpub"]).search(body) for body in bodies
+    )]
+    if not owned:
+        raise RpcError("This wallet does not own a signer key in every descriptor branch.")
+    xpub = owned[0]
+    pattern = key_pattern(xpub)
+    active = len(branches) <= 2 and info.get("isrange", False) and all(
+        body.startswith(("pkh(", "wpkh(", "sh(", "wsh(", "tr(")) for body in bodies
+    )
+    existing = {item["desc"]: item for item in
+                rpc(cli, "listdescriptors", wallet=wallet)["descriptors"]}
+    states = {desc: bool(active or existing.get(desc, {}).get("active")) for desc in branches}
+    pending = [desc for desc in branches
+               if desc not in existing or existing[desc]["active"] != states[desc]]
+    if pending:
+        private_keys = rpc(cli, "gethdkeys", '{"private":true}',
+                           wallet=wallet, sensitive=True)
+        try:
+            private = next(key["xprv"] for key in private_keys
+                           if key["xpub"] == xpub and key.get("has_private"))
+            for index, (desc, body) in enumerate(zip(branches, bodies)):
+                if desc in pending:
+                    private_body = pattern.sub(
+                        lambda match: match.group(0).replace(xpub, private, 1), body
+                    )
+                    old = existing.get(desc, {})
+                    import_signing_descriptor(
+                        cli, wallet, desc, private_body, active=states[desc],
+                        internal=old.get("internal", len(branches) == 2 and index == 1),
+                        previous=old,
+                    )
+        finally:
+            # Python strings cannot be zeroized; never print or persist these.
+            del private_keys
+    verify_signer(cli, wallet, xpub, states)
+    print("Descriptor imported. Signer ready.")
 
 
 def main():
     if len(sys.argv) != 4 or sys.argv[3] not in {"create", "import"}:
-        fail("Run sh tails.sh create or sh tails.sh import.")
-    bitcoin_cli, qr_bin, step = sys.argv[1:]
-    version, chain, coin_type = core_info(bitcoin_cli)
-    print(f"Bitcoin Core: {version}\nNetwork: {chain}\n")
+        raise RpcError("Run sh tails.sh create or sh tails.sh import.")
+    cli, qr_bin, step = sys.argv[1:]
+    if rpc(cli, "getnetworkinfo")["version"] // 10000 != 32:
+        raise RpcError("Bitcoin Core 32.x is required.")
+    chain = rpc(cli, "getblockchaininfo")["chain"]
+    if chain not in {"main", "test", "testnet4", "signet", "regtest"}:
+        raise RpcError("Unsupported Bitcoin network.")
+    print(f"Network: {chain}\n")
     if step == "create":
-        create_signer(bitcoin_cli, qr_bin, coin_type)
-        return
-    wallet = select_wallet(bitcoin_cli)
-    show_wallet_public_keys(bitcoin_cli, wallet)
-    while True:
-        raw = input("Public descriptor: ").strip()
-        if not raw:
-            print("Descriptor cannot be blank.")
-            continue
-        try:
-            import_public_descriptor(bitcoin_cli, wallet, raw)
-            break
-        except (DescriptorError, RpcError) as exc:
-            print(f"Descriptor rejected: {exc}")
-            print("Try again, or press Ctrl-C and run sh tails.sh import later.")
+        create_signer(cli, qr_bin, int(chain != "main"))
+    else:
+        wallet = select_wallet(cli)
+        show_wallet_public_keys(cli, wallet)
+        while True:
+            try:
+                import_public_descriptor(cli, wallet, input("Public descriptor: ").strip())
+                break
+            except RpcError as error:
+                print(f"Descriptor rejected: {error}\nTry again, or press Ctrl-C to import later.")
 
 
 if __name__ == "__main__":
     try:
         main()
-    except RpcError as exc:
-        fail(str(exc))
+    except (RpcError, subprocess.CalledProcessError) as error:
+        print(f"Error: {error}", file=sys.stderr)
+        sys.exit(1)
     except (KeyboardInterrupt, EOFError):
-        print("\nStopped. Keep the wallet output; rerun the appropriate step when ready.", file=sys.stderr)
-        raise SystemExit(1)
+        print("\nStopped. Keep the wallet and rerun the step when ready.", file=sys.stderr)
+        sys.exit(1)

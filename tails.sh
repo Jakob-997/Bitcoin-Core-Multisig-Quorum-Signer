@@ -1,14 +1,10 @@
 #!/bin/sh
-set -e
-
-here=$(CDPATH='' cd -- "$(dirname -- "$0")" && pwd)
+set -eu
 umask 077
+here=$(CDPATH='' cd -- "$(dirname -- "$0")" && pwd)
 
-project_slug="core-descriptor-signer"
-output_dir_name="descriptor-signer-wallets"
 if [ "$#" -eq 0 ]; then
-    printf '(c)reate - Create a signer wallet and export its public key\n'
-    printf '(i)mport - Select an existing wallet and import a public descriptor\n'
+    printf '(c)reate - Create wallet and export public key\n(i)mport - Import descriptor into an existing wallet\n'
     while :; do
         printf '\nType create (c) or import (i): '
         IFS= read -r step || exit 1
@@ -19,117 +15,53 @@ if [ "$#" -eq 0 ]; then
         esac
     done
 else
-    step=$1
-fi
-case "$step" in
-    create|c|C) [ "$#" -le 1 ] || exit 1; step=create ;;
-    import|i|I) [ "$#" -le 1 ] || exit 1; step=import ;;
-    *) echo "Usage: sh tails.sh [create|c|import|i]" >&2; exit 1 ;;
-esac
-
-zenity --text-info \
-    --title="Pre-Creation Guide" \
-    --filename="$here/PRE-CREATION-GUIDE.txt" \
-    --width=800 \
-    --height=700 \
-    >/dev/null 2>&1 &
-
-echo "Please read PRE-CREATION-GUIDE.txt before creating a descriptor signer, if you have not already done so."
-
-if ! command -v python3 >/dev/null 2>&1; then
-    echo "Error: python3 was not found." >&2
-    exit 1
+    [ "$#" -eq 1 ] || { echo "Usage: sh tails.sh [create|import]" >&2; exit 1; }
+    case "$1" in
+        create|c|C) step=create ;;
+        import|i|I) step=import ;;
+        *) echo "Usage: sh tails.sh [create|import]" >&2; exit 1 ;;
+    esac
 fi
 
-if ! command -v qr >/dev/null 2>&1; then
-    echo "Error: qr was not found. Tails provides it through python3-qrcode." >&2
-    exit 1
-fi
-
-if ! command -v nmcli >/dev/null 2>&1; then
-    echo "Error: nmcli was not found." >&2
-    exit 1
-fi
-
+for command in python3 qr nmcli; do
+    command -v "$command" >/dev/null || { echo "Missing command: $command" >&2; exit 1; }
+done
 nmcli networking off
-if [ "$(LC_ALL=C nmcli networking)" != "disabled" ]; then
-    echo "Failed to disable networking."
-    exit 1
+[ "$(LC_ALL=C nmcli networking)" = disabled ] || { echo "Networking is still enabled." >&2; exit 1; }
+
+output_dir="$here/descriptor-signer-wallets"
+if [ "$step" = import ]; then
+    [ -d "$output_dir" ] || { echo "Run sh tails.sh create first." >&2; exit 1; }
+else
+    mkdir -p "$output_dir"
 fi
-
-state=$(mktemp -d "/dev/shm/$project_slug.XXXXXX")
-trap 'rm -rf "$state"' EXIT
-trap 'exit 1' HUP INT TERM
-
 archive="$here/../bitcoin-32.0rc2-x86_64-linux-gnu.tar.gz"
-
-# Bitcoin Core Feature Overlay baseline, reviewed for this utility:
-# https://bitcoincore.org/bin/bitcoin-core-32.0/test.rc2/SHA256SUMS
 printf '0255103718033e6aee15fa944717fc277e047b845bff1e7408af0ea732d8d0c1  %s\n' "$archive" | sha256sum --check
 
-core_dir=$(mktemp -d "$here/../bitcoin-32.0rc2-$project_slug.XXXXXX")
-tar -xzf "$archive" -C "$core_dir" --strip-components=1 --no-same-owner
-
-bitcoin_cli="$core_dir/bin/bitcoin-cli"
-bitcoind_bin="$core_dir/bin/bitcoind"
-qr_bin=$(command -v qr)
-
-if [ ! -x "$bitcoin_cli" ] || [ ! -x "$bitcoind_bin" ]; then
-    echo "Bitcoin Core v32.0rc2 binaries missing or not executable in the verified extraction."
-    exit 1
-fi
-
-output_dir="$here/$output_dir_name"
-
-original_home=$HOME
-export HOME="$state"
-cd "$here"
+state=$(mktemp -d /dev/shm/core-descriptor-signer.XXXXXX)
 core_pid=""
-
-stop_core() {
+cleanup() {
     if [ -n "$core_pid" ]; then
         kill -TERM "$core_pid" 2>/dev/null || true
         wait "$core_pid" || return 1
         core_pid=""
     fi
+    rm -rf -- "$state"
 }
-
-cleanup() {
-    # Keep runtime and extraction if Core did not shut down cleanly.
-    stop_core && rm -rf -- "$state"
-}
-
 trap cleanup EXIT
+trap 'exit 1' HUP INT TERM
+core_dir=$(mktemp -d "$here/../bitcoin-32.0rc2-core-descriptor-signer.XXXXXX")
+tar -xzf "$archive" -C "$core_dir" --strip-components=1 --no-same-owner
 
-# Wallet names, not a separate session file, identify the two independent steps.
-if [ "$step" = "import" ]; then
-    if [ ! -d "$output_dir" ]; then
-        echo "No wallet directory found. Run sh tails.sh create first." >&2
-        exit 1
-    fi
-else
-    mkdir -p "$output_dir"
-fi
-
-"$bitcoind_bin" -daemon=0 -printtoconsole=0 -networkactive=0 -listen=0 -walletdir="$output_dir" &
+# The wrapper uses the same isolated datadir for every RPC, including later loads.
+printf '#!/bin/sh\nexec "%s" -datadir="%s" "$@"\n' "$core_dir/bin/bitcoin-cli" "$state" > "$state/bitcoin-cli"
+chmod 700 "$state/bitcoin-cli"
+"$core_dir/bin/bitcoind" -datadir="$state" -daemon=0 -printtoconsole=0 \
+    -networkactive=0 -listen=0 -walletdir="$output_dir" &
 core_pid=$!
-"$bitcoin_cli" -rpcwait -rpcwaittimeout=60 getblockchaininfo >/dev/null
-printf '\n'
-
-python3 "$here/generator.py" "$bitcoin_cli" "$qr_bin" "$step"
-
+"$state/bitcoin-cli" -rpcwait -rpcwaittimeout=60 getblockchaininfo >/dev/null
+python3 "$here/generator.py" "$state/bitcoin-cli" "$(command -v qr)" "$step"
 cleanup
-# Only a verified signer and clean Core shutdown permit extraction removal.
 rm -rf -- "$core_dir"
 trap - EXIT HUP INT TERM
-export HOME="$original_home"
-
-setsid -f zenity --text-info \
-    --title="Post-Creation Guide" \
-    --filename="$here/POST-CREATION-GUIDE.txt" \
-    --width=800 \
-    --height=700 \
-    </dev/null >/dev/null 2>&1
-
-echo "Please read POST-CREATION-GUIDE.txt."
-printf '\nStep complete. You may now close this window.\n'
+printf '\nStep complete. Back up descriptor-signer-wallets/ before shutting down Tails.\n'
