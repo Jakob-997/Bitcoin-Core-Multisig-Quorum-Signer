@@ -1,5 +1,7 @@
 # Bitcoin Core Descriptor Signer
 
+**Status: Untested right now.** This simplified version has not been tested end to end with real Bitcoin Core or on Tails. Python unit tests pass, but the actual create/import workflow still needs verification. Do not use it with real funds until that testing is complete.
+
 Two independent steps on offline Tails. Wallets stay in `descriptor-signer-wallets/` inside this project.
 
 ## 1. Create the wallet
