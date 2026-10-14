@@ -1,46 +1,14 @@
-PRE-CREATION / IMPORT GUIDE
+BEFORE SETUP
 
-[ ] Verify the Tails ISO and independently verify Bitcoin Core v32.0rc2.
-[ ] Place this project beside bitcoin-32.0rc2-x86_64-linux-gnu.tar.gz.
-[ ] Physically air-gap the computer where practical.
-[ ] Prepare secure persistent/offline wallet storage and backup media.
-[ ] Independently verify the intended policy, fingerprints, origins, addresses, thresholds, timelocks, and recovery paths.
-[ ] Have a test network or disposable funds for signing and restore tests.
-
-VERIFY SOFTWARE
-
+Verify Tails and the pinned Bitcoin Core archive independently:
 https://tails.net/install/download/
 https://bitcoincore.org/en/download/#verify-your-download
 
-Pinned archive SHA-256:
-0255103718033e6aee15fa944717fc277e047b845bff1e7408af0ea732d8d0c1
+Put bitcoin-32.0rc2-x86_64-linux-gnu.tar.gz beside this project folder.
+Prepare secure persistent/offline wallet storage. Close other Core instances.
 
-The launcher checks this exact archive, freshly extracts it, disables NetworkManager networking, and starts Core with -networkactive=0 -listen=0. These are defense in depth, not a physical air gap. Close conflicting Core instances first.
+Run sh tails.sh create to create the wallet and export its public key.
+Back up descriptor-signer-wallets/ before shutting down Tails.
 
-STEP 1 -- CREATE WALLET AND EXPORT XPUB
-
-Run sh tails.sh and type create at the prompt. Choose a NEW wallet name and account:
-BIP87: m/87h/coin_typeh/0h
-BIP48 native-P2WSH: m/48h/coin_typeh/0h/2h
-
-Core creates a root, derives the account, and stores the private account as unused() in the wallet. The public [origin]xpub is displayed as text and QR. Compare scanned QR text with the displayed text. Step 1 finishes here.
-
-Back up the wallet. Preserve the complete descriptor-signer-wallets/ directory on secure persistent/offline media BEFORE shutting down Tails; temporary Tails home storage does not survive shutdown. Add the public key to your coordinator's policy whenever ready.
-
-STEP 2 -- SELECT WALLET AND IMPORT PUBLIC DESCRIPTOR
-
-Later, run sh tails.sh and type import at the prompt. Select the existing wallet from the numbered list and paste the complete PUBLIC descriptor. Core must report that the selected wallet privately owns an exact descriptor xpub in every branch. An unrelated or watch-only wallet is rejected. No replacement key or new wallet is created during import.
-
-The helper substitutes a matching private key in memory, checks that every public branch is unchanged, imports missing branches, and verifies the result. Supported ranged address policies are activated for receiving/change. Other valid policies remain available for signing; generate their addresses on the coordinator. Repeating import repairs an earlier inactive address policy without resetting its next address index. Core's default range applies to new ranged imports.
-
-If interrupted, preserve the wallet output and rerun sh tails.sh import with the SAME wallet and descriptor. Already imported branches are verified and skipped. Do not fund a partial import before completion.
-
-Each successful step removes its fresh Core extraction only after verification and clean shutdown. Failed/interrupted runs retain the extraction and wallet output; failed shutdown retains runtime state too. The project and archive remain available. There is no separate session file to preserve.
-
-IMPORTANT
-
-Wallet ownership does not prove the policy is correct or that one signer can spend every path. Core-valid policies can have wrong cosigners, thresholds, timelocks, or recovery branches. Verify the policy independently before funding.
-
-Optional shortcuts: sh tails.sh create and sh tails.sh import skip the prompt.
-
-Expert shortcuts: the menu labels are (c)reate and (i)mport. Type c or C for create, or i or I for import. Full words still work. The same letters can be supplied as launcher arguments (for example, sh tails.sh c).
+Whenever ready, run sh tails.sh import, select that wallet, and paste the
+coordinator's PUBLIC descriptor. See README.md for setup and recovery.

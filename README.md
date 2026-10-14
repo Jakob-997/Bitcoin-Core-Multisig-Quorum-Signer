@@ -1,49 +1,37 @@
 # Bitcoin Core Descriptor Signer
 
-Create an offline signer, then import its public descriptor in a separate run.
+**Status: Untested right now.** This simplified version has not been tested end to end with real Bitcoin Core or on Tails. Python unit tests pass, but the actual create/import workflow still needs verification. Do not use it with real funds until that testing is complete.
 
-Built using the [Bitcoin Core Feature Overlay](https://github.com/Jakob-997/Bitcoin-Core-Feature-Overlay), reviewed against revision `5011c687c4c10ce9f70bef4dfbac9dfe89825406`. The repository slug is retained for continuity.
+Two independent steps on offline Tails. Wallets stay in `descriptor-signer-wallets/` inside this project.
 
-## Two independent steps
-
-Verify Tails and the pinned Bitcoin Core v32.0rc2 archive. Put the archive beside this project folder, read PRE-CREATION-GUIDE.txt, and run:
+## 1. Create the wallet
 
 ```sh
-sh tails.sh
+sh tails.sh create
 ```
 
-At the prompt, type `create` to create a wallet and export its public key. Type `import` to select an existing wallet and import a public descriptor. Invalid choices are retried; blank input never creates a wallet.
+Choose a wallet name and BIP87 or BIP48 account. Core creates and stores the signing key. Copy the public `[origin]xpub` from the text or QR into your coordinator.
 
-Choose a new wallet name and BIP87 (`m/87h/coin_typeh/0h`) or BIP48 native-P2WSH (`m/48h/coin_typeh/0h/2h`). Core generates the root and derives the account. The account's private key is stored in Core using an `unused()` descriptor; the public `[origin]xpub` is displayed as text and QR. Step 1 then finishes without asking for a wallet policy.
+Back up the wallet on secure persistent/offline storage before shutting down Tails. You can stop here for as long as you need.
 
-Back up the wallet and keep `descriptor-signer-wallets/` on secure persistent/offline media before shutting down Tails. An ordinary temporary Tails home does not survive shutdown. Add the displayed public key to your coordinator's policy whenever ready.
+## 2. Import the descriptor
 
-Later, run `sh tails.sh` again and type `import`. You can also skip the prompt using `sh tails.sh create` or `sh tails.sh import`.
+```sh
+sh tails.sh import
+```
 
-Select an existing wallet from the list. The import step displays its public account key again, including its origin, before asking you to paste the complete PUBLIC descriptor. Core must report that this wallet holds the private key for an exact descriptor xpub in every expanded branch. An unrelated or watch-only wallet is rejected. The helper substitutes that wallet-owned private key only in memory, proves that Core's canonical public policy is unchanged, imports the missing branches, and verifies the result.
+Select the existing wallet and paste the coordinator's public descriptor. The helper checks that the wallet owns a signer key, imports the policy, and verifies it. Import never creates a wallet or replacement key.
 
-The steps depend on Core's wallet files, not a separate session/checkpoint file. A restored private descriptor wallet with a matching stored HD account key can also be selected. Step 2 never creates a wallet or generates a replacement key. A key represented only as a derived fixed hex public key, or an account xpub not stored in the selected wallet, is outside this helper's ownership lookup.
+You can also run `sh tails.sh` for a create/import menu; `c` and `i` are shortcuts.
 
-## Interruptions and repeated import
+## Setup and recovery
 
-Press Ctrl-C or close the terminal if step 2 must stop. Keep the wallet output, rerun `sh tails.sh import`, select the same wallet, and paste the same descriptor. Branches already present are verified and skipped; missing branches are imported. Repeated import preserves the existing branches' range, next index, and timestamps. Ranged address policies are activated for receiving/change, including policies imported inactive by earlier versions. Rerun import with the same wallet and descriptor to repair that state. A partially imported wallet must not be funded until the whole policy passes verification.
+Put the verified `bitcoin-32.0rc2-x86_64-linux-gnu.tar.gz` archive beside this project folder. The launcher checks the pinned hash, disables networking, and runs Core in a temporary datadir. Python 3, `qr`, and `nmcli` are required.
 
-Step 1 refuses an existing wallet name; use a new name for a new signer. Each successful step shuts down its own Core process cleanly and removes its fresh temporary extraction. Failure or interruption retains the extraction and wallet output; failed shutdown retains runtime state too. The project and original archive are preserved. Close conflicting Core instances before running the launcher.
+Both steps use Core's wallet files; no session file is needed. Restore a wallet into `descriptor-signer-wallets/` to import later. If import is interrupted, repeat it with the same wallet and descriptor. Existing branches keep their address indexes, ranges, and timestamps. Supported ranged policies enable receive/change addresses; other policies remain available for signing.
 
-## Descriptor acceptance and security
+Verify the policy and addresses independently before funding, and test signing and backup restoration with disposable funds. Wallets are unencrypted; private keys briefly enter Python memory during import and cannot be reliably zeroized. Sensitive RPC input goes through stdin and sensitive errors are redacted.
 
-There is no policy-shape whitelist: Core parses multisig, Miniscript, Taproot, combo, fixed, and multipath forms. The descriptor must be public, contain an exact HD xpub privately held by the selected wallet, preserve its public policy after substitution, and pass Core wallet import. Parser acceptance alone does not guarantee import; for example, a cosigner's hardened derivation may need unavailable private keys.
+Run tests with `python3 -m unittest discover -s tests -v`. Real-Core integration tests require `CORE_TEST_CLI`, an executable wrapper pointing to an isolated Core 32.x regtest node.
 
-Core expands multipath descriptors. Every branch is checked and imported separately; for exactly two branches, the second is internal, matching Core's convention. Ranged pkh, wpkh, sh, wsh, and tr policies with one or two branches are activated for address generation. In Core Receive, select the matching address type (native P2WSH multisig uses bech32). Other valid policies, including combo, bare pk, fixed descriptors, and policies with more than two branches, remain available for signing; use the coordinator to derive their addresses. New ranged imports use Core's default keypool range; extend it through Core if needed.
-
-Origin annotations and child suffixes from the public policy are preserved exactly after Core canonicalization. Ownership is bound to the exact xpub, rather than requiring a particular origin annotation or policy shape. Independently check fingerprints, origins, thresholds, timelocks, recovery paths, and addresses before funding. Successful import does not prove policy intent.
-
-Sensitive RPC input uses stdin, and potentially sensitive errors are redacted. Private keys are not intentionally printed, QR encoded, or written by the helper. Python strings cannot be reliably zeroized, and Core's private-key inventory is briefly held in memory during import. Wallet encryption is not implemented.
-
-## Tests and review
-
-Run `python3 -m unittest discover -s tests -v`. Launcher tests require a POSIX environment and use isolated command doubles. For real-Core tests, set `CORE_TEST_CLI` to an executable wrapper selecting a fresh offline v32.0rc2 regtest node with an empty wallet directory. Tests create disposable wallets.
-
-See [DESIGN.md](DESIGN.md), [AUDITING.md](AUDITING.md), and [AUDIT.md](AUDIT.md) for design and test evidence. The generator owns Core RPC logic, tails.sh owns OS/runtime behavior, and the guides own human verification/backup procedures. AI-assisted review only; no independent professional security audit has been performed.
-
-Expert shortcuts: the menu labels are (c)reate and (i)mport. Type c or C for create, or i or I for import. Full words still work. The same letters can be supplied as launcher arguments (for example, sh tails.sh c).
+See [UPSTREAM.md](UPSTREAM.md) for provenance and the pinned Core build.

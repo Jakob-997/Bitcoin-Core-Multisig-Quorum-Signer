@@ -1,29 +1,11 @@
-POST-STEP GUIDE
+AFTER SETUP
 
-Wallets are in descriptor-signer-wallets/ inside this project.
+Back up descriptor-signer-wallets/ on secure persistent/offline storage before
+shutting down Tails. Private wallet backups are sensitive.
 
-AFTER STEP 1
+After create: give the public [origin]xpub to your coordinator.
+After import: independently check the policy, cosigners and receive/change
+addresses. Test signing and backup restoration with disposable funds.
 
-The account private key is stored in Core's wallet. Add the exported public [origin]xpub to the coordinator's policy. Step 2 can be performed later using sh tails.sh import and the selected wallet.
-
-Back up the wallet and preserve wallet output on secure persistent/offline media before shutting down Tails. The ordinary temporary home does not survive shutdown. A private-key wallet backup is sensitive; anyone obtaining it may be able to sign when a policy path involving that key is available. No separate session/checkpoint file is required.
-
-AFTER STEP 2
-
-The complete supplied public descriptor has been imported and verified. Supported ranged policies are active for address generation. Native P2WSH multisig uses the bech32 address type in Core Receive. Other valid policies remain available for signing; use the coordinator for their addresses. Core's default range applies to new ranged imports. Existing address indexes, ranges and timestamps are retained; earlier inactive address policies are activated on repeat import.
-
-Independently verify fingerprints, origins, cosigners, thresholds, timelocks, recovery paths, Taproot scripts, and the first receive/change addresses. Core import is not proof of policy intent or enough signing keys to spend.
-
-TEST WITH DISPOSABLE FUNDS
-
-Create a PSBT exercising a path involving this signer. Inspect destination, amount, and fee on the offline signer; sign with Core. Complete required signatures and verify the transaction before broadcast. Test timelocked/recovery paths separately on regtest where practical.
-
-VERIFY BACKUP RESTORE
-
-Restore on an offline system. Confirm the wallet loads, the same public descriptor and addresses are present, and the local signer signs an applicable disposable PSBT. After testing, shut down the system and store backups with enough separated independent signer material for the policy.
-
-INTERRUPTED STEP 2
-
-Keep the wallet output. Rerun sh tails.sh import with the same wallet and descriptor. Completed branches are verified and skipped; missing branches are imported. Do not fund an incomplete policy.
-
-The current temporary Core extraction is removed after successful step verification and clean shutdown. The project, original archive, and wallet output remain available. The coordinator may be compromised: independently verify policy and transaction intent before signing.
+If import is interrupted, rerun sh tails.sh import with the same wallet and
+descriptor. Do not fund an incomplete policy.
